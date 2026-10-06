@@ -10,10 +10,6 @@ on:
         description: Branch or commit with the self-hosted Android settings
         default: selfhost-android
         required: true
-      server_url:
-        description: Default server baked into the app
-        default: ""
-        required: true
 
 permissions:
   contents: read
@@ -29,8 +25,6 @@ jobs:
     timeout-minutes: 60
     env:
       CI: "1"
-      EXPO_PUBLIC_API_URL: ${{ inputs.server_url }}
-      # empty server_url = no baked-in server; app falls back to user-entered URL
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
