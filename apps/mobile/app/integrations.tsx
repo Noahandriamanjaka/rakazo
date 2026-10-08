@@ -7,11 +7,10 @@ import {
   filterConnectionCatalogItems,
   humanizeToolName,
 } from "@rakazo/core";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useFocusEffect } from "expo-router";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ActivityIndicator,
   Alert,
-  Image,
   Linking,
   Pressable,
   ScrollView,
@@ -22,11 +21,23 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { ConnectorIcon } from "../components/connector-icon";
+import { NativeActionButton } from "../components/native-action-button";
+import { Chevron } from "../components/row-accessories";
 import { rpc } from "../lib/api";
 import { mobileTokens } from "../lib/appearance";
 import { useI18n } from "../lib/i18n";
+import type { IntegrationsCacheScope, IntegrationsSnapshot } from "../lib/integrations-cache";
+import {
+  integrationsCacheScope,
+  isIntegrationsScopeCurrent,
+  persistedIntegrationsCacheScope,
+  readIntegrationsCache,
+  writeIntegrationsCache,
+} from "../lib/integrations-cache";
 import { loadLastBotId } from "../lib/last-bot";
 import { native, useThemedStyles } from "../lib/native";
+import { errorText } from "../lib/user-error";
 
 type SourceKind = "treg" | "executor" | "mcp" | "api" | "graphql";
 type ConnectionTool = { name: string; description: string };
@@ -35,43 +46,6 @@ const LOGO_SIZE = 32;
 
 function itemKey(item: Pick<ConnectionCatalogItem, "connectorId" | "slug">) {
   return `${item.connectorId}:${item.slug}`;
-}
-
-function ConnectorLogo({
-  logo,
-  label,
-  styles,
-}: {
-  logo?: string | null;
-  label: string;
-  styles: ReturnType<typeof createIntegrationsStyles>;
-}) {
-  const [failed, setFailed] = useState(false);
-  useEffect(() => {
-    setFailed(false);
-  }, [logo]);
-  const initial = (label.trim()[0] || "?").toUpperCase();
-  if (!logo || failed) {
-    return (
-      <View
-        accessibilityElementsHidden
-        importantForAccessibility="no-hide-descendants"
-        style={styles.logoFallback}
-      >
-        <Text style={styles.logoInitial}>{initial}</Text>
-      </View>
-    );
-  }
-  return (
-    <Image
-      accessibilityIgnoresInvertColors
-      accessible={false}
-      onError={() => setFailed(true)}
-      resizeMode="contain"
-      source={{ uri: logo }}
-      style={styles.logo}
-    />
-  );
 }
 
 export default function Integrations() {
@@ -103,6 +77,76 @@ export default function Integrations() {
   const [toolsTick, setToolsTick] = useState(0);
   const connectionAttempt = useRef<AbortController | null>(null);
 
+  const cacheScope = useRef<IntegrationsCacheScope | null>(null);
+  const snapshot = useRef<IntegrationsSnapshot>({ catalog: [], connections: [] });
+  const mounted = useRef(false);
+  const focusGeneration = useRef(0);
+  const refreshGeneration = useRef(0);
+  const sourcesGeneration = useRef(0);
+
+  function applySnapshot(next: IntegrationsSnapshot) {
+    snapshot.current = next;
+    setCatalog(next.catalog);
+    setConnections(next.connections);
+    setCatalogReady(true);
+    setLabelDrafts((current) =>
+      Object.fromEntries(
+        next.connections
+          .filter((row) => row.status === "connected" || row.status === "pending")
+          .map((row) => [row.id, current[row.id] ?? row.displayName]),
+      ),
+    );
+  }
+
+  function saveSnapshot(next: IntegrationsSnapshot) {
+    const scope = cacheScope.current;
+    if (!mounted.current || !scope || !isIntegrationsScopeCurrent(scope)) return;
+    // A mutation invalidates any earlier background refresh.
+    refreshGeneration.current += 1;
+    applySnapshot(next);
+    writeIntegrationsCache(scope, next);
+  }
+
+  function captureConnectionScope() {
+    const scope = cacheScope.current;
+    const focus = focusGeneration.current;
+    return () => {
+      const current = cacheScope.current;
+      return (
+        !!scope &&
+        !!current &&
+        mounted.current &&
+        focus === focusGeneration.current &&
+        isIntegrationsScopeCurrent(scope) &&
+        scope.userId === current.userId &&
+        scope.spaceId === current.spaceId
+      );
+    };
+  }
+
+  function updateAccount(row: Connection) {
+    const connections = [
+      ...snapshot.current.connections.filter((entry) => entry.id !== row.id),
+      row,
+    ];
+    saveSnapshot({
+      connections,
+      catalog: snapshot.current.catalog.map((item) =>
+        item.connectorId === row.connectorId && item.slug === row.provider
+          ? {
+              ...item,
+              connected: connections.some(
+                (entry) =>
+                  entry.connectorId === item.connectorId &&
+                  entry.provider === item.slug &&
+                  entry.status === "connected",
+              ),
+            }
+          : item,
+      ),
+    });
+  }
+
   const featuredTiles = useMemo(() => buildFeaturedConnectorTiles(catalog), [catalog]);
   const showFeatured = !query.trim();
   const catalogApps = useMemo(() => filterConnectionCatalogItems(catalog, query), [catalog, query]);
@@ -117,46 +161,135 @@ export default function Integrations() {
     );
   }, [catalog, detailKey]);
 
+  function clearStaleScope() {
+    if (!cacheScope.current || isIntegrationsScopeCurrent(cacheScope.current)) return;
+    cacheScope.current = null;
+    refreshGeneration.current += 1;
+    sourcesGeneration.current += 1;
+    applySnapshot({ catalog: [], connections: [] });
+    setCatalogReady(false);
+    setSources([]);
+    setDetailKey(null);
+    setLabelDrafts({});
+    setPending(null);
+    connectionAttempt.current?.abort();
+  }
+
   async function refresh() {
-    const catalogResult = await rpc<ConnectionCatalogItem[]>("connections/catalog");
-    setCatalog(catalogResult);
-    setCatalogReady(true);
+    const focus = focusGeneration.current;
+    clearStaleScope();
+    let scope: IntegrationsCacheScope;
     try {
-      const rows = await rpc<Connection[]>("connections/list");
-      setConnections(rows);
-      setLabelDrafts((current) => {
-        const next: Record<string, string> = {};
-        for (const row of rows) {
-          if (row.status === "connected" || row.status === "pending") {
-            next[row.id] = current[row.id] ?? row.displayName;
-          }
-        }
-        return next;
-      });
-    } catch {
-      setConnections([]);
+      scope = await integrationsCacheScope();
+    } catch (reason) {
+      if (!mounted.current || focus !== focusGeneration.current) return;
+      if (cacheScope.current && !isIntegrationsScopeCurrent(cacheScope.current)) {
+        clearStaleScope();
+        return refresh();
+      }
+      throw reason;
+    }
+    if (!mounted.current || focus !== focusGeneration.current) return;
+    if (!isIntegrationsScopeCurrent(scope)) {
+      clearStaleScope();
+      return refresh();
+    }
+    const previous = cacheScope.current;
+    if (previous && (previous.userId !== scope.userId || previous.spaceId !== scope.spaceId)) {
+      applySnapshot({ catalog: [], connections: [] });
+      setCatalogReady(false);
+      setSources([]);
+      setDetailKey(null);
       setLabelDrafts({});
     }
+    cacheScope.current = scope;
+    if (!previous || previous.userId !== scope.userId || previous.spaceId !== scope.spaceId) {
+      const cached = readIntegrationsCache(scope);
+      if (cached) applySnapshot(cached);
+    }
+    const generation = ++refreshGeneration.current;
+    const sourceGeneration = ++sourcesGeneration.current;
+    void rpc<CapabilityInstall[]>("capabilities/list")
+      .then((installs) => {
+        if (
+          mounted.current &&
+          isIntegrationsScopeCurrent(scope) &&
+          sourceGeneration === sourcesGeneration.current
+        ) {
+          setSources(
+            installs.filter(
+              (item) => item.kind === "mcp" || item.kind === "api" || item.kind === "graphql",
+            ),
+          );
+        }
+      })
+      .catch(() => undefined);
+    setCatalogError(null);
+    let next: IntegrationsSnapshot;
     try {
-      const installs = await rpc<CapabilityInstall[]>("capabilities/list");
-      setSources(
-        installs.filter(
-          (item) => item.kind === "mcp" || item.kind === "api" || item.kind === "graphql",
-        ),
-      );
-    } catch {
-      // Tool sources are optional; keep featured/catalog usable if this fails.
+      const [catalog, connections] = await Promise.all([
+        rpc<ConnectionCatalogItem[]>("connections/catalog"),
+        rpc<Connection[]>("connections/list"),
+      ]);
+      next = { catalog, connections };
+    } catch (reason) {
+      if (!mounted.current || focus !== focusGeneration.current) return;
+      if (!isIntegrationsScopeCurrent(scope)) return refresh();
+      if (generation === refreshGeneration.current) throw reason;
+      return;
+    }
+    if (!mounted.current || focus !== focusGeneration.current) return;
+    if (!isIntegrationsScopeCurrent(scope)) return refresh();
+    if (generation !== refreshGeneration.current) return;
+    applySnapshot(next);
+    writeIntegrationsCache(scope, next);
+  }
+
+  async function retryRefresh() {
+    const focus = focusGeneration.current;
+    try {
+      await refresh();
+    } catch (reason) {
+      if (
+        mounted.current &&
+        focus === focusGeneration.current &&
+        (!cacheScope.current || isIntegrationsScopeCurrent(cacheScope.current))
+      ) {
+        setCatalogError(errorText(reason, t("Could not load integrations")));
+      }
     }
   }
 
-  useEffect(() => {
-    void refresh().catch((reason) => {
-      setCatalogReady(false);
-      setCatalogError(reason instanceof Error ? reason.message : t("Could not load integrations"));
-    });
-    void loadLastBotId().then(setLastBotId);
-    return () => connectionAttempt.current?.abort();
-  }, []);
+  useFocusEffect(
+    useCallback(() => {
+      mounted.current = true;
+      focusGeneration.current += 1;
+      let cancelled = false;
+      clearStaleScope();
+      void (async () => {
+        const scope = await persistedIntegrationsCacheScope();
+        if (cancelled) return;
+        if (scope && isIntegrationsScopeCurrent(scope)) {
+          cacheScope.current = scope;
+          const cached = readIntegrationsCache(scope);
+          if (cached) applySnapshot(cached);
+        }
+        await retryRefresh();
+      })();
+      void loadLastBotId().then((id) => {
+        if (!cancelled) setLastBotId(id);
+      });
+      return () => {
+        cancelled = true;
+        mounted.current = false;
+        focusGeneration.current += 1;
+        refreshGeneration.current += 1;
+        sourcesGeneration.current += 1;
+        connectionAttempt.current?.abort();
+        setPending(null);
+      };
+    }, []),
+  );
 
   useEffect(() => {
     if (!detailKey) {
@@ -218,9 +351,9 @@ export default function Integrations() {
     return item.connected || accountsFor(item).some((row) => row.status === "connected");
   }
 
-  async function notifyAppConnected(item: ConnectionCatalogItem) {
+  async function notifyAppConnected(item: ConnectionCatalogItem, isCurrent: () => boolean) {
     const botId = lastBotId || (await loadLastBotId());
-    if (!botId) return;
+    if (!botId || !isCurrent()) return;
     if (botId !== lastBotId) setLastBotId(botId);
     void rpc("onboarding/appConnected", {
       botId,
@@ -230,6 +363,8 @@ export default function Integrations() {
   }
 
   async function connect(item: ConnectionCatalogItem) {
+    const isCurrent = captureConnectionScope();
+    if (!isCurrent()) return;
     connectionAttempt.current?.abort();
     const controller = new AbortController();
     connectionAttempt.current = controller;
@@ -248,54 +383,63 @@ export default function Integrations() {
           })(),
         },
       );
+      if (!isCurrent() || controller.signal.aborted) return;
       if (started.authorizationUrl) await Linking.openURL(started.authorizationUrl);
       for (let attempt = 0; attempt < 45; attempt += 1) {
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted || !isCurrent()) return;
         const row = await rpc<Connection>("connections/complete", {
           connectionId: started.connectionId,
         }).catch(() => undefined);
         if (row?.status === "connected") {
-          if (controller.signal.aborted) return;
-          void notifyAppConnected(item);
+          if (controller.signal.aborted || !isCurrent()) return;
+          updateAccount(row);
+          void notifyAppConnected(item, isCurrent);
           await refresh();
-          setToolsTick((tick) => tick + 1);
+          if (isCurrent()) setToolsTick((tick) => tick + 1);
           return;
         }
         await abortableDelay(2_000, controller.signal);
       }
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted || !isCurrent()) return;
       Alert.alert(
         t("Connection pending"),
         t("Finish connecting in the browser, then refresh this page."),
       );
     } catch (reason) {
-      if (controller.signal.aborted) return;
-      setCatalogError(reason instanceof Error ? reason.message : t("Could not connect"));
+      if (controller.signal.aborted || !isCurrent()) return;
+      setCatalogError(errorText(reason, t("Could not connect")));
     } finally {
       if (connectionAttempt.current === controller) {
         connectionAttempt.current = null;
-        setPending(null);
+        if (isCurrent()) setPending(null);
       }
     }
   }
 
   async function revokeAccount(row: Connection) {
+    const isCurrent = captureConnectionScope();
+    if (!isCurrent()) return;
     setPending(row.id);
     setCatalogError(null);
     try {
       await rpc("connections/revoke", { connectionId: row.id });
+      if (!isCurrent()) return;
+      updateAccount({ ...row, status: "revoked" });
       await refresh();
-      setToolsTick((tick) => tick + 1);
+      if (isCurrent()) setToolsTick((tick) => tick + 1);
     } catch (reason) {
-      setCatalogError(reason instanceof Error ? reason.message : t("Could not revoke connection"));
+      if (!isCurrent()) return;
+      setCatalogError(errorText(reason, t("Could not revoke connection")));
     } finally {
-      setPending(null);
+      if (isCurrent()) setPending(null);
     }
   }
 
   async function renameAccount(row: Connection) {
     const displayName = (labelDrafts[row.id] ?? row.displayName).trim();
     if (!displayName || displayName === row.displayName) return;
+    const isCurrent = captureConnectionScope();
+    if (!isCurrent()) return;
     setPending(`rename:${row.id}`);
     setCatalogError(null);
     try {
@@ -303,20 +447,20 @@ export default function Integrations() {
         connectionId: row.id,
         displayName,
       });
-      setConnections((current) =>
-        current.map((entry) =>
-          entry.id === row.id ? { ...entry, displayName: updated.displayName } : entry,
-        ),
-      );
+      if (!isCurrent()) return;
+      updateAccount(updated);
       setLabelDrafts((current) => ({ ...current, [row.id]: updated.displayName }));
     } catch (reason) {
-      setCatalogError(reason instanceof Error ? reason.message : t("Could not rename connection"));
+      if (!isCurrent()) return;
+      setCatalogError(errorText(reason, t("Could not rename connection")));
     } finally {
-      setPending(null);
+      if (isCurrent()) setPending(null);
     }
   }
 
   async function uninstall(item: ConnectionCatalogItem) {
+    const isCurrent = captureConnectionScope();
+    if (!isCurrent()) return;
     const matches = accountsFor(item);
     const key = itemKey(item);
     if (matches.length === 0) {
@@ -328,14 +472,17 @@ export default function Integrations() {
     try {
       for (const row of matches) {
         await rpc("connections/revoke", { connectionId: row.id });
+        if (!isCurrent()) return;
+        updateAccount({ ...row, status: "revoked" });
       }
       await refresh();
-      closeDetail();
+      if (isCurrent()) closeDetail();
     } catch (reason) {
-      setCatalogError(reason instanceof Error ? reason.message : t("Could not revoke connection"));
+      if (!isCurrent()) return;
+      setCatalogError(errorText(reason, t("Could not revoke connection")));
       await refresh().catch(() => undefined);
     } finally {
-      setPending(null);
+      if (isCurrent()) setPending(null);
     }
   }
 
@@ -382,7 +529,7 @@ export default function Integrations() {
       setSourceKind(null);
       await refresh();
     } catch (reason) {
-      setSourceError(reason instanceof Error ? reason.message : t("Could not add source"));
+      setSourceError(errorText(reason, t("Could not add source")));
     } finally {
       setPending(null);
     }
@@ -395,7 +542,7 @@ export default function Integrations() {
       await rpc("capabilities/remove", { id: source.id });
       setSources((current) => current.filter((item) => item.id !== source.id));
     } catch (reason) {
-      setSourceError(reason instanceof Error ? reason.message : t("Could not remove source"));
+      setSourceError(errorText(reason, t("Could not remove source")));
     } finally {
       setPending(null);
     }
@@ -407,25 +554,25 @@ export default function Integrations() {
     const connecting = pending === key;
     if (connected) {
       return (
-        <Pressable
-          accessibilityRole="button"
+        <NativeActionButton
           accessibilityLabel={t("Added")}
           disabled={connecting}
+          fill={false}
+          label={connecting ? t("Working…") : t("Added")}
           onPress={() => openDetail(item)}
-        >
-          <Text style={styles.link}>{connecting ? t("Working…") : t("Added")}</Text>
-        </Pressable>
+          prominence="secondary"
+        />
       );
     }
     return (
-      <Pressable
-        accessibilityRole="button"
+      <NativeActionButton
         accessibilityLabel={t("Add {name}", { name: label })}
         disabled={connecting}
+        fill={false}
+        label={connecting ? t("Working…") : t("Add")}
         onPress={() => void connect(item)}
-      >
-        <Text style={styles.link}>{connecting ? t("Working…") : t("Add")}</Text>
-      </Pressable>
+        prominence="secondary"
+      />
     );
   }
 
@@ -433,7 +580,7 @@ export default function Integrations() {
     const connected = itemConnected(item);
     const body = (
       <>
-        <ConnectorLogo logo={item.logo} label={label} styles={styles} />
+        <ConnectorIcon logo={item.logo} name={label} size={LOGO_SIZE} />
         <View style={styles.grow}>
           <Text numberOfLines={1} style={styles.title}>
             {label}
@@ -481,19 +628,19 @@ export default function Integrations() {
             >
               <Text style={styles.link}>{t("Back")}</Text>
             </Pressable>
-            <ConnectorLogo logo={item.logo} label={item.name} styles={styles} />
+            <ConnectorIcon logo={item.logo} name={item.name} size={LOGO_SIZE} />
             <Text numberOfLines={1} style={styles.detailTitle}>
               {item.name}
             </Text>
           </View>
-          <Pressable
-            accessibilityRole="button"
+          <NativeActionButton
             accessibilityLabel={t("Uninstall")}
             disabled={uninstalling || connecting}
+            fill={false}
+            label={uninstalling ? t("Working…") : t("Uninstall")}
             onPress={() => void uninstall(item)}
-          >
-            <Text style={styles.link}>{uninstalling ? t("Working…") : t("Uninstall")}</Text>
-          </Pressable>
+            prominence="destructive"
+          />
         </View>
 
         <View style={styles.card}>
@@ -509,25 +656,23 @@ export default function Integrations() {
                 accessibilityLabel={t("Account label")}
                 style={styles.accountLabel}
               />
-              <Pressable
-                accessibilityRole="button"
+              <NativeActionButton
                 accessibilityLabel={t("Remove {name}", { name: row.displayName })}
                 disabled={pending === row.id || uninstalling}
+                fill={false}
+                label={pending === row.id ? t("Working…") : t("Remove")}
                 onPress={() => void revokeAccount(row)}
-              >
-                <Text style={styles.link}>{pending === row.id ? t("Working…") : t("Remove")}</Text>
-              </Pressable>
+                prominence="destructive"
+              />
             </View>
           ))}
-          <Pressable
-            accessibilityRole="button"
+          <NativeActionButton
             accessibilityLabel={t("Add another {name}", { name: item.name })}
             disabled={connecting || uninstalling}
+            label={connecting ? t("Working…") : t("Add another")}
             onPress={() => void connect(item)}
-            style={styles.cardButton}
-          >
-            <Text style={styles.buttonLabel}>{connecting ? t("Working…") : t("Add another")}</Text>
-          </Pressable>
+            prominence="secondary"
+          />
         </View>
 
         <View style={styles.card}>
@@ -544,7 +689,7 @@ export default function Integrations() {
                   ? t("1 tool")
                   : t("{count} tools", { count: toolCount })}
             </Text>
-            <Text style={styles.chevron}>{toolsOpen ? "˅" : "›"}</Text>
+            <Chevron expanded={toolsOpen} />
           </Pressable>
           {toolsOpen ? (
             <View style={styles.toolsBody}>
@@ -568,7 +713,11 @@ export default function Integrations() {
 
   return (
     <SafeAreaView edges={["bottom"]} style={styles.screen}>
-      <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.content}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        contentInsetAdjustmentBehavior="automatic"
+        keyboardShouldPersistTaps="handled"
+      >
         {!detailItem ? (
           <TextInput
             value={query}
@@ -586,13 +735,43 @@ export default function Integrations() {
           />
         ) : null}
 
-        {catalogError ? <Text style={styles.error}>{catalogError}</Text> : null}
+        {catalogError ? (
+          <View style={styles.catalogStack}>
+            <Text style={styles.error}>{catalogError}</Text>
+            <NativeActionButton
+              label={t("Retry")}
+              fill={false}
+              onPress={() => void retryRefresh()}
+              prominence="secondary"
+            />
+          </View>
+        ) : null}
 
         {detailItem ? (
           renderDetail(detailItem)
         ) : (
           <>
-            {!catalogReady ? <ActivityIndicator color={native.fillPressed} /> : null}
+            {!catalogReady && !catalogError ? (
+              <View
+                testID="integrations-loading"
+                accessibilityElementsHidden
+                importantForAccessibility="no-hide-descendants"
+                style={catalogColumns === 2 ? styles.catalogGrid : styles.catalogStack}
+              >
+                {Array.from({ length: 8 }, (_, index) => (
+                  <View
+                    key={index}
+                    style={[styles.row, catalogColumns === 2 ? styles.catalogCell : null]}
+                  >
+                    <View style={styles.logoPlaceholder} />
+                    <View style={styles.grow}>
+                      <View style={styles.titlePlaceholder} />
+                    </View>
+                    <View style={styles.pillPlaceholder} />
+                  </View>
+                ))}
+              </View>
+            ) : null}
 
             {catalogReady && catalog.length === 0 ? (
               <Text style={styles.secondary}>{t(EMPTY_PLUGIN_CATALOG_MESSAGE)}</Text>
@@ -617,7 +796,7 @@ export default function Integrations() {
                             disabled ? { opacity: 0.7 } : null,
                           ]}
                         >
-                          <ConnectorLogo label={tile.label} styles={styles} />
+                          <ConnectorIcon logo={item?.logo} name={tile.label} size={LOGO_SIZE} />
                           <View style={styles.grow}>
                             <Text numberOfLines={1} style={styles.title}>
                               {tile.label}
@@ -639,13 +818,11 @@ export default function Integrations() {
             ) : null}
 
             {renderedApps.length < catalogApps.length ? (
-              <Pressable
-                accessibilityRole="button"
+              <NativeActionButton
+                label={t("Show more")}
                 onPress={() => setVisibleCount((count) => count + CONNECTION_CATALOG_PAGE_SIZE)}
-                style={styles.smallButton}
-              >
-                <Text style={styles.buttonLabel}>{t("Show more")}</Text>
-              </Pressable>
+                prominence="secondary"
+              />
             ) : null}
 
             <Pressable
@@ -659,21 +836,17 @@ export default function Integrations() {
               style={styles.advancedToggle}
             >
               <Text style={styles.advancedLabel}>{t("Advanced")}</Text>
-              <Text style={styles.chevron}>›</Text>
+              <Chevron expanded={advancedOpen} />
             </Pressable>
 
             {advancedOpen ? (
               <View style={styles.advancedBody}>
                 <View style={styles.accountActions}>
                   {(["mcp", "api", "graphql", "executor", "treg"] as const).map((kind) => (
-                    <Pressable
+                    <NativeActionButton
                       key={kind}
-                      accessibilityRole="button"
-                      onPress={() => beginSource(kind)}
-                      style={styles.smallButton}
-                    >
-                      <Text style={styles.buttonLabel}>
-                        {kind === "treg"
+                      label={
+                        kind === "treg"
                           ? t("Add Treg")
                           : kind === "executor"
                             ? t("Add Executor")
@@ -681,9 +854,11 @@ export default function Integrations() {
                               ? t("Add MCP server")
                               : kind === "graphql"
                                 ? t("Add GraphQL")
-                                : t("Add OpenAPI")}
-                      </Text>
-                    </Pressable>
+                                : t("Add OpenAPI")
+                      }
+                      onPress={() => beginSource(kind)}
+                      prominence="secondary"
+                    />
                   ))}
                 </View>
 
@@ -758,25 +933,17 @@ export default function Integrations() {
                       />
                     ) : null}
                     <View style={styles.accountActions}>
-                      <Pressable
-                        accessibilityRole="button"
-                        disabled={pending === "source"}
+                      <NativeActionButton
+                        busy={pending === "source"}
+                        label={t("Verify and add")}
                         onPress={() => void addSource()}
-                        style={styles.smallButton}
-                      >
-                        {pending === "source" ? (
-                          <ActivityIndicator color={native.label} />
-                        ) : (
-                          <Text style={styles.buttonLabel}>{t("Verify and add")}</Text>
-                        )}
-                      </Pressable>
-                      <Pressable
-                        accessibilityRole="button"
+                        prominence="secondary"
+                      />
+                      <NativeActionButton
+                        label={t("Cancel")}
                         onPress={() => setSourceKind(null)}
-                        style={styles.smallButton}
-                      >
-                        <Text style={styles.buttonLabel}>{t("Cancel")}</Text>
-                      </Pressable>
+                        prominence="secondary"
+                      />
                     </View>
                   </View>
                 ) : null}
@@ -793,11 +960,12 @@ export default function Integrations() {
                         {source.kind.toUpperCase()} · {source.source}
                       </Text>
                     </View>
-                    <Pressable accessibilityRole="button" onPress={() => void removeSource(source)}>
-                      <Text style={styles.remove}>
-                        {pending === source.id ? t("Removing…") : t("Remove")}
-                      </Text>
-                    </Pressable>
+                    <NativeActionButton
+                      fill={false}
+                      label={pending === source.id ? t("Removing…") : t("Remove")}
+                      onPress={() => void removeSource(source)}
+                      prominence="destructive"
+                    />
                   </View>
                 ))}
               </View>
@@ -816,24 +984,6 @@ function createIntegrationsStyles() {
     content: { padding: 20, gap: 14 },
     explanation: { color: native.secondaryLabel, fontSize: 14, lineHeight: 20 },
     section: { color: native.secondaryLabel, fontSize: 14, fontWeight: "600", marginTop: 2 },
-    smallButton: {
-      minHeight: 42,
-      paddingHorizontal: 14,
-      borderRadius: 12,
-      backgroundColor: native.fill,
-      alignItems: "center",
-      justifyContent: "center",
-    },
-    cardButton: {
-      alignSelf: "flex-start",
-      minHeight: 42,
-      paddingHorizontal: 14,
-      borderRadius: 12,
-      backgroundColor: native.fillPressed,
-      alignItems: "center",
-      justifyContent: "center",
-    },
-    buttonLabel: { color: native.label, fontSize: 14, fontWeight: "600" },
     card: { padding: 16, borderRadius: 16, backgroundColor: native.fill, gap: 12 },
     input: {
       minHeight: 48,
@@ -857,24 +1007,23 @@ function createIntegrationsStyles() {
       alignItems: "center",
       gap: 10,
     },
-    logo: {
+    logoPlaceholder: {
       width: LOGO_SIZE,
       height: LOGO_SIZE,
       borderRadius: 10,
       backgroundColor: native.fillPressed,
     },
-    logoFallback: {
-      width: LOGO_SIZE,
-      height: LOGO_SIZE,
-      borderRadius: 10,
+    titlePlaceholder: {
+      width: "65%",
+      height: 14,
+      borderRadius: 4,
       backgroundColor: native.fillPressed,
-      alignItems: "center",
-      justifyContent: "center",
     },
-    logoInitial: {
-      color: native.label,
-      fontSize: 14,
-      fontWeight: "600",
+    pillPlaceholder: {
+      width: 52,
+      height: 30,
+      borderRadius: 15,
+      backgroundColor: native.fillPressed,
     },
     grow: { flex: 1, gap: 3, minWidth: 0 },
     title: { color: native.label, fontSize: 15, fontWeight: "600" },
@@ -901,7 +1050,6 @@ function createIntegrationsStyles() {
       fontSize: 13,
     },
     link: { color: native.label, fontSize: 14, fontWeight: "600" },
-    remove: { color: destructive, fontSize: 14, fontWeight: "600" },
     error: { color: destructive, fontSize: 14 },
     detail: { gap: 14 },
     detailHeader: {
@@ -930,6 +1078,5 @@ function createIntegrationsStyles() {
     },
     advancedLabel: { color: native.secondaryLabel, fontSize: 14 },
     advancedBody: { gap: 14 },
-    chevron: { color: native.secondaryLabel, fontSize: 18 },
   });
 }
