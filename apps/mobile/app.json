@@ -1,12 +1,12 @@
 {
   "expo": {
-    "name": "Rakazo",
-    "slug": "rakazo",
+    "name": "Rakazo SH",
+    "slug": "rakazo-sh",
     "owner": "inbox-zero",
-    "scheme": "rakazo",
+    "scheme": "rakazo-sh",
     "version": "1.0.5",
-    "orientation": "default",
-    "userInterfaceStyle": "automatic",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
     "icon": "./assets/icon.png",
     "plugins": [
       [
@@ -53,10 +53,11 @@
       ],
       "expo-sharing",
       "./plugins/with-worklets-headers",
-      "./plugins/with-scene-lifecycle"
+      "./plugins/with-scene-lifecycle",
+      "./plugins/with-cleartext-lan"
     ],
     "ios": {
-      "bundleIdentifier": "com.rakazo.app",
+      "bundleIdentifier": "com.rakazosh.app",
       "buildNumber": "1",
       "supportsTablet": false,
       "icon": "../../packages/ui-tokens/assets/Rakazo.icon",
@@ -73,8 +74,8 @@
       }
     },
     "android": {
-      "package": "com.rakazo.app",
-      "versionCode": 10,
+      "package": "com.rakazosh.app",
+      "versionCode": 5,
       "softwareKeyboardLayoutMode": "resize",
       "icon": "./assets/icon.png",
       "adaptiveIcon": {
@@ -97,7 +98,8 @@
       "policy": "appVersion"
     },
     "updates": {
-      "url": "https://u.expo.dev/07f7eb04-45e3-47fe-9374-99a2f991131e"
+      "url": "https://u.expo.dev/07f7eb04-45e3-47fe-9374-99a2f991131e",
+      "enabled": false
     }
   }
 }
