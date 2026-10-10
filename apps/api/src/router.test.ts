@@ -1,3 +1,6 @@
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { createRouterClient } from "@orpc/server";
 import { RPCHandler } from "@orpc/server/fetch";
 import type { ManagedConnectorProvider } from "@rakazo/adapter-kit";
@@ -8,6 +11,7 @@ import {
   ComputerScreenUnavailableError,
   EncryptedSecretStore,
   IntegrationProviderSettings,
+  LocalAgentHomeStore,
   screenLeaseIdForRun,
 } from "@rakazo/adapters";
 import type { Actor, Bot, ProductEvent } from "@rakazo/contracts";
@@ -3372,24 +3376,50 @@ describe("routines.update", () => {
     webhookEnabled: false,
     githubEnabled: false,
     messageProvider: null,
+    modelProvider: null,
+    modelId: null,
+    thinkingLevel: null,
     lastRunAt: null,
     nextRunAt: null,
     createdAt: new Date("2026-09-01T00:00:00.000Z"),
   };
 
-  function fixture(botArchived: boolean, archivedBeforeWrite = false) {
-    const update = vi.fn(async (args: { data: Record<string, unknown> }) => {
-      if (archivedBeforeWrite) throw Object.assign(new Error("not found"), { code: "P2025" });
-      return {
-        ...routine,
-        ...Object.fromEntries(Object.entries(args.data).filter(([, value]) => value !== undefined)),
-      };
-    });
+  function fixture(
+    botArchived: boolean,
+    archivedBeforeWrite = false,
+    model: Record<string, unknown> = {},
+  ) {
+    const savedRoutine = { ...routine, ...model };
+    const update = vi.fn(
+      async (args: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
+        if (archivedBeforeWrite) throw Object.assign(new Error("not found"), { code: "P2025" });
+        return {
+          ...savedRoutine,
+          ...Object.fromEntries(
+            Object.entries(args.data).filter(([, value]) => value !== undefined),
+          ),
+        };
+      },
+    );
     const enqueue = vi.fn(async () => undefined);
     const prisma = {
+      spaceModelPreference: {
+        findMany: vi.fn(async () => []),
+        findFirst: vi.fn(async () => ({ id: "preference-1" })),
+      },
+      userModelCredential: {
+        findMany: vi.fn(async () => [
+          {
+            id: "credential-1",
+            provider: "openai-compatible",
+            apiKey: "fake-key",
+            userId: actor.userId,
+          },
+        ]),
+      },
       routine: {
         findFirst: vi.fn(async (args: { where: { bot?: { archivedAt: null } } }) =>
-          botArchived && args.where.bot?.archivedAt === null ? null : routine,
+          botArchived && args.where.bot?.archivedAt === null ? null : savedRoutine,
         ),
         update,
       },
@@ -3407,7 +3437,7 @@ describe("routines.update", () => {
         jobs: { enqueue, cancel: vi.fn(async () => undefined) },
       } as unknown as RouterDeps),
     );
-    const call = () =>
+    const call = (patch: Record<string, unknown> = {}) =>
       handler.handle(
         new Request("http://127.0.0.1/rpc/routines/update", {
           method: "POST",
@@ -3417,12 +3447,13 @@ describe("routines.update", () => {
               routineId: "routine-1",
               active: true,
               runAt: new Date(Date.now() + 60_000).toISOString(),
+              ...patch,
             },
           }),
         }),
         { prefix: "/rpc", context: { actor } },
       );
-    return { update, enqueue, call };
+    return { update, enqueue, call, findFirst: prisma.routine.findFirst };
   }
 
   it("refuses to re-arm a routine on an archived bot without writing", async () => {
@@ -3451,6 +3482,84 @@ describe("routines.update", () => {
     const { response } = await call();
     expect(response.status).toBe(404);
     expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  const ownModel = {
+    modelProvider: "openai-compatible",
+    modelId: "old-model",
+    thinkingLevel: "high",
+  };
+
+  it("leaves model columns out of unrelated updates", async () => {
+    const { call, update } = fixture(false, false, ownModel);
+    expect((await call({ name: "Renamed" })).response.status).toBe(200);
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "routine-1", bot: { archivedAt: null } } }),
+    );
+    const data = update.mock.calls[0]![0].data;
+    for (const column of ["modelProvider", "modelId", "thinkingLevel"])
+      expect(data).not.toHaveProperty(column);
+  });
+
+  it.each(["modelProvider", "modelId", "thinkingLevel"])(
+    "rejects a partial model patch when %s changes before the write",
+    async (column) => {
+      const { call, update, enqueue } = fixture(false, false, ownModel);
+      update.mockImplementationOnce(async (args) => {
+        const current: Record<string, unknown> = { ...ownModel, [column]: "concurrent-choice" };
+        expect(args.where).toMatchObject(ownModel);
+        if (args.where[column] !== current[column]) {
+          throw Object.assign(new Error("not found"), { code: "P2025" });
+        }
+        throw new Error("Concurrent model change was not guarded");
+      });
+      expect((await call({ thinkingLevel: "low" })).response.status).toBe(409);
+      expect(enqueue).not.toHaveBeenCalled();
+    },
+  );
+
+  it("returns not found if a model update races with a parent archive", async () => {
+    const { call, findFirst } = fixture(false, true, ownModel);
+    findFirst.mockResolvedValueOnce({ ...routine, ...ownModel }).mockResolvedValueOnce(null);
+    expect((await call({ thinkingLevel: "low" })).response.status).toBe(404);
+  });
+
+  it("merges a model-id-only patch with the saved provider and clears old thinking", async () => {
+    const { call, update } = fixture(false, false, ownModel);
+    expect((await call({ modelId: "new-model" })).response.status).toBe(200);
+    expect(update.mock.calls[0]![0].data).toMatchObject({
+      modelProvider: "openai-compatible",
+      modelId: "new-model",
+      thinkingLevel: null,
+    });
+  });
+
+  it("merges a provider-only patch with the saved model and clears old thinking", async () => {
+    const { call, update } = fixture(false, false, { ...ownModel, modelProvider: "openrouter" });
+    expect((await call({ modelProvider: "openai-compatible" })).response.status).toBe(200);
+    expect(update.mock.calls[0]![0].data).toMatchObject({
+      modelProvider: "openai-compatible",
+      modelId: "old-model",
+      thinkingLevel: null,
+    });
+  });
+
+  it("keeps an explicitly supplied thinking level when changing models", async () => {
+    const { call, update } = fixture(false, false, ownModel);
+    expect((await call({ modelId: "new-model", thinkingLevel: "low" })).response.status).toBe(200);
+    expect(update.mock.calls[0]![0].data).toMatchObject({ thinkingLevel: "low" });
+  });
+
+  it("rejects a partial patch whose resulting model is incomplete", async () => {
+    const { call, update } = fixture(false, false, ownModel);
+    expect((await call({ modelId: null })).response.status).toBe(400);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("rejects thinking without a resulting model", async () => {
+    const { call, update } = fixture(false);
+    expect((await call({ thinkingLevel: "high" })).response.status).toBe(400);
+    expect(update).not.toHaveBeenCalled();
   });
 });
 
@@ -3689,6 +3798,222 @@ describe("groups.archive", () => {
       }),
     );
     expect(calls).toEqual(["cancel run work", "release screen", "expire lease"]);
+  });
+});
+
+describe("boards.rename", () => {
+  const actor = {
+    spaceId: "workspace-1",
+    userId: "user-1",
+    email: "user@rakazo.test",
+    isDeploymentOwner: true,
+  } satisfies Actor;
+
+  function boardRow(ticketPrefix = "RAK") {
+    return {
+      id: "board-1",
+      spaceId: "workspace-1",
+      name: "Personal",
+      ticketPrefix,
+      nextNumber: 2,
+      createdAt: new Date("2026-06-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-06-01T00:00:00.000Z"),
+    };
+  }
+
+  function renameDeps(tickets: number, ticketPrefix = "RAK") {
+    const count = vi.fn(async () => tickets);
+    const update = vi.fn(async ({ data }: { data: { name?: string; ticketPrefix?: string } }) => ({
+      ...boardRow(ticketPrefix),
+      ...data,
+      updatedAt: new Date("2026-06-02T00:00:00.000Z"),
+    }));
+    const prisma = {
+      board: {
+        findUnique: vi.fn(async () => boardRow(ticketPrefix)),
+        update,
+      },
+      ticket: { count },
+    } as unknown as PrismaClient;
+    const deps = { prisma, env: { ticketBoardEnabled: true } } as unknown as RouterDeps;
+    return { count, update, handler: new RPCHandler(createRouter(deps)) };
+  }
+
+  async function rename(handler: RPCHandler<never>, body: unknown) {
+    const { response } = await handler.handle(
+      new Request("http://127.0.0.1/rpc/boards/rename", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ json: body }),
+      }),
+      { prefix: "/rpc", context: { actor } },
+    );
+    return response;
+  }
+
+  it("rejects a prefix change after tickets exist", async () => {
+    const { count, update, handler } = renameDeps(2);
+    const response = await rename(handler, { ticketPrefix: "OPS" });
+    expect(response?.status).toBe(400);
+    await expect(response?.json()).resolves.toEqual({
+      json: expect.objectContaining({
+        code: "BAD_REQUEST",
+        message: "Cannot change the ticket prefix once tickets exist.",
+      }),
+    });
+    expect(count).toHaveBeenCalledWith({
+      where: { boardId: "board-1", spaceId: "workspace-1" },
+    });
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("renames the board without changing the prefix", async () => {
+    const { count, update, handler } = renameDeps(2);
+    const response = await rename(handler, { name: "Launch" });
+    expect(response?.status).toBe(200);
+    await expect(response?.json()).resolves.toEqual({
+      json: expect.objectContaining({ name: "Launch", ticketPrefix: "RAK" }),
+    });
+    expect(count).not.toHaveBeenCalled();
+    expect(update).toHaveBeenCalledWith({
+      where: { id: "board-1" },
+      data: { name: "Launch" },
+    });
+  });
+});
+
+describe("export.bot", () => {
+  const actor = {
+    spaceId: "workspace-1",
+    userId: "user-1",
+    email: "user@rakazo.test",
+    isDeploymentOwner: true,
+  } satisfies Actor;
+  const roots: string[] = [];
+
+  afterEach(async () => {
+    await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  });
+
+  async function homeWith(files: Record<string, string | Uint8Array>) {
+    const root = await mkdtemp(path.join(tmpdir(), "rakazo-export-"));
+    roots.push(root);
+    const home = new LocalAgentHomeStore(root);
+    for (const [file, content] of Object.entries(files)) {
+      const target = path.join(home.pathFor("home-1"), file);
+      await mkdir(path.dirname(target), { recursive: true });
+      await writeFile(target, content);
+    }
+    return home;
+  }
+
+  async function exportFiles(scope: "team" | "dedicated", home: LocalAgentHomeStore) {
+    const prisma = {
+      bot: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: "bot-1",
+          name: "Writer",
+          title: "",
+          description: "",
+          instructions: "",
+          thread: { id: "thread-1" },
+          computer: { id: "computer-1", scope, homeKey: "home-1" },
+        }),
+      },
+      memoryDocument: { findMany: vi.fn().mockResolvedValue([]) },
+      routine: { findMany: vi.fn().mockResolvedValue([]) },
+      message: { findMany: vi.fn().mockResolvedValue([]) },
+    } as unknown as PrismaClient;
+    const deps = {
+      prisma,
+      home,
+      env: {
+        webOrigin: "http://127.0.0.1:5173",
+        screenProxySecret: "fake-test-secret",
+        sandboxProvider: "docker",
+      },
+      dataDir: "/tmp/rakazo-router-test",
+    } as unknown as RouterDeps;
+    const client = createRouterClient(createRouter(deps), { context: { actor } as never });
+    const manifest = await client.export.bot({ botId: "bot-1" });
+    return manifest.files.sort((a, b) => a.path.localeCompare(b.path));
+  }
+
+  it("exports only the bot's own folder from a Team Computer", async () => {
+    const home = await homeWith({
+      "bots/bot-1/notes/result.txt": "mine",
+      "bots/bot-1/project/.gitignore": "dist",
+      "bots/bot-1/.cache/pip/wheel": "cache",
+      "bots/bot-10/notes.txt": "prefix-sharing bot",
+      "bots/bot-2/private.txt": "other bot",
+      "shared/handoff.txt": "shared",
+      ".cache/fontconfig/cache-1": Uint8Array.from([0, 159, 146, 150]),
+      ".browser-profiles/chromium-bot-1/Cookies": "session",
+    });
+    const own = path.join(home.pathFor("home-1"), "bots/bot-1");
+    await symlink("../bot-2", path.join(own, "peer-dir"));
+    await symlink("../bot-2/private.txt", path.join(own, "peer-file"));
+    await symlink("../../shared", path.join(own, "shared-link"));
+    await symlink(".cache/pip/wheel", path.join(own, "wheel.txt"));
+
+    expect(await exportFiles("team", home)).toEqual([
+      { path: "notes/result.txt", content: "mine" },
+      { path: "project/.gitignore", content: "dist" },
+    ]);
+  });
+
+  it("keeps the bot's files that another bot links to", async () => {
+    const home = await homeWith({
+      "bots/bot-1/attachments/photo.bin": Uint8Array.from([0, 255]),
+      "bots/bot-00/notes.txt": "other bot",
+    });
+    await symlink("../bot-1/attachments", path.join(home.pathFor("home-1"), "bots/bot-00/grab"));
+
+    expect((await exportFiles("team", home)).map((file) => file.path)).toEqual([
+      "attachments/photo.bin",
+    ]);
+  });
+
+  it("exports nothing when the bot's Team Computer folder is a link", async () => {
+    const home = await homeWith({ "bots/bot-2/private.txt": "other bot" });
+    await symlink("bot-2", path.join(home.pathFor("home-1"), "bots/bot-1"));
+
+    expect(await exportFiles("team", home)).toEqual([]);
+  });
+
+  it("skips machine state at the root of a Private Computer home", async () => {
+    const home = await homeWith({
+      "notes/result.txt": "mine",
+      "project/.gitignore": "dist",
+      ".cache/fontconfig/cache-1": Uint8Array.from([0, 159, 146, 150]),
+      ".config/mimeapps.list": "[Default Applications]",
+      ".browser-profiles/chromium/Cookies": "session",
+      ".bash_history": "history",
+    });
+    const root = home.pathFor("home-1");
+    await symlink(".bash_history", path.join(root, "history.txt"));
+    await symlink(".config/mimeapps.list", path.join(root, "notes/mimeapps.list"));
+    await symlink(".gitignore", path.join(root, "project/ignore.txt"));
+
+    expect((await exportFiles("dedicated", home)).map((file) => file.path)).toEqual([
+      "notes/result.txt",
+      "project/.gitignore",
+      "project/ignore.txt",
+    ]);
+  });
+
+  it("keeps binary and byte-order-marked files byte-exact", async () => {
+    const binary = Uint8Array.from([0, 255, 137, 80, 78, 71, 13, 10, 26, 10, 192, 128]);
+    const bom = Uint8Array.from([0xef, 0xbb, 0xbf, ...new TextEncoder().encode("hello")]);
+    const home = await homeWith({ "image.png": binary, "bom.txt": bom, "plain.txt": "שלום ✎" });
+
+    const files = await exportFiles("dedicated", home);
+    expect(files).toEqual([
+      { path: "bom.txt", content: "\uFEFFhello" },
+      { path: "image.png", content: Buffer.from(binary).toString("base64"), encoding: "base64" },
+      { path: "plain.txt", content: "שלום ✎" },
+    ]);
+    expect(new TextEncoder().encode(files[0]!.content)).toEqual(bom);
   });
 });
 

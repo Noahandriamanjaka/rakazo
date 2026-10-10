@@ -94,6 +94,7 @@ describe("Android mobile platform contract", () => {
     expect(module).toContain('AsyncFunction("setOpenThread")');
     expect(live).toContain("setOpenNotificationThread");
     expect(thread).toContain("if (!navigation.isFocused() || !notificationThreadId) return");
+    expect(thread).toContain("    }, [botId, notificationThreadId]),\n  );");
     expect(service).toContain(
       "fun clearSession(context: Context) {\n      synchronized(sessionLock)",
     );
@@ -306,7 +307,9 @@ describe("Android mobile platform contract", () => {
     expect(speaking).toContain(
       'Alert.alert(t("Could not speak"), errorText(err, t("Try again.")))',
     );
-    expect(readFileSync(resolve(mobileRoot, "app/voice.tsx"), "utf8")).toContain("export default");
+    expect(readFileSync(resolve(mobileRoot, "app/(settings)/voice.tsx"), "utf8")).toContain(
+      "export default",
+    );
   });
 
   it("shows agent notification silence in the menu, inbox avatar, and DM header only", () => {

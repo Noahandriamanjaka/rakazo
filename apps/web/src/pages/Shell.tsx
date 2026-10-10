@@ -13,12 +13,14 @@ import type {
   ConnectionCatalogItem,
   Group,
   Me,
+  MessageReaction,
   ProductEvent,
   Routine,
   SearchHit,
   Space,
   SpaceMemoryConfig,
   TaughtSkill,
+  ThinkingLevel,
   ThreadMessage,
   ThreadSnapshot,
   VoiceStatus,
@@ -29,13 +31,12 @@ import {
   ATTACHMENT_MAX_COUNT,
   canReactToThreadMessage,
   MESSAGE_REACTIONS,
-  type MessageReaction,
   normalizeCreateBotProfile,
 } from "@rakazo/contracts";
+import type { ComposerMention, SlashActionId } from "@rakazo/core";
 import {
   attachmentsForThread,
   buildComposerMentionOptions,
-  type ComposerMention,
   clampMentionHighlightIndex,
   cronFromPreset,
   formatMessageTime,
@@ -56,7 +57,6 @@ import {
   resolveMentionPickerKey,
   runThreadSubscription,
   SLASH_ACTIONS,
-  type SlashActionId,
   searchHitThreadTarget,
   serializeComposerPrompt,
   speechFromBlocks,
@@ -65,6 +65,7 @@ import {
   userVisibleMessages,
   withLiveStreamingProgress,
 } from "@rakazo/core";
+import type { GroupAvatarMember } from "@rakazo/ui-web";
 import {
   AvatarStyleProvider,
   BotAvatar,
@@ -75,7 +76,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
   GroupAvatar,
-  type GroupAvatarMember,
   InputGroup,
   InputGroupAddon,
   InputGroupInput,
@@ -113,17 +113,15 @@ import {
   Settings,
   Smile,
   Square,
+  SquareKanban,
   TextQuote,
   Trash2,
   X,
 } from "lucide-react";
+import type { ClipboardEvent, DragEvent, MutableRefObject, RefObject } from "react";
 import {
-  type ClipboardEvent,
-  type DragEvent,
   Fragment,
-  type MutableRefObject,
   memo,
-  type RefObject,
   Suspense,
   useCallback,
   useEffect,
@@ -189,6 +187,7 @@ import { scheduleFocusPrompt } from "../lib/focus-prompt";
 import { localTimezone } from "../lib/local-timezone";
 import { copyableMessageText } from "../lib/message-text";
 import { messageProviderLabel } from "../lib/messaging";
+import { parseModelOptionKey } from "../lib/model-catalog";
 import {
   isFileDrag,
   isFilePaste,
@@ -245,10 +244,10 @@ import type { ContextMenuPosition } from "./BotContextMenu";
 import { CreateGroupForm, GroupSettings, memberName } from "./GroupPanel";
 import { HostComputerPrompt } from "./HostComputerPrompt";
 import { ResizableSidePanel } from "./ResizableSidePanel";
+import type { RoutineDraftState } from "./RoutineEditor";
 import {
   draftFromRoutine,
   emptyRoutineDraft,
-  type RoutineDraftState,
   RoutineEditor,
   RoutineListHeader,
   RoutineListRow,
@@ -313,7 +312,7 @@ type PendingBrowserNotification = {
   groupNotification: boolean;
 };
 
-const ATTACHMENT_ACCEPT = ATTACHMENT_ALLOWED_MIME_TYPES.join(",");
+const ATTACHMENT_ACCEPT = [...ATTACHMENT_ALLOWED_MIME_TYPES, ".zip"].join(",");
 /** Identity colour for bots the roster no longer knows about. */
 const FALLBACK_BOT_COLOR = "#85858A";
 const THREAD_SNAPSHOT_TIMEOUT_MS = 2_000;
@@ -2028,9 +2027,9 @@ export function ShellPage() {
     [t],
   );
   const onAttachmentPick = useCallback(
-    async (files: FileList | null) => {
+    (files: FileList | null) => {
       const threadKey = activeGroupId.current ?? activeBotId.current;
-      if (!threadKey || !files?.length) return;
+      if (!threadKey || !files?.length) return false;
       const existing = attachmentsForThread(pendingAttachments, threadKey);
       const next: PendingAttachment[] = [];
       const skipped: string[] = [];
@@ -2058,6 +2057,7 @@ export function ShellPage() {
       if (next.length) setPendingAttachments((current) => [...current, ...next]);
       setAttachmentNotice(skipped.length ? t`Skipped ${skipped.join(", ")}` : null);
       if (fileInputRef.current) fileInputRef.current.value = "";
+      return next.length > 0;
     },
     [pendingAttachments, t],
   );
@@ -2066,10 +2066,10 @@ export function ShellPage() {
     setPendingAttachments((current) => current.filter((item) => item.id !== attachment.id));
   }, []);
   const sendMessage = useCallback(
-    async (text: string, mentions: ComposerMention[] = []) => {
+    async (text: string, mentions: ComposerMention[], clientNonce: string) => {
       const initialBotTarget = activeBotId.current;
       const initialGroupTarget = activeGroupId.current;
-      if ((!initialBotTarget && !initialGroupTarget) || sending) return;
+      if ((!initialBotTarget && !initialGroupTarget) || sending) return false;
       const originThreadKey = initialGroupTarget ?? initialBotTarget;
       const attachments = attachmentsForThread(pendingAttachments, originThreadKey);
       const plan = resolveComposerSendPlan({
@@ -2077,7 +2077,7 @@ export function ShellPage() {
         mentions,
         hasAttachments: attachments.length > 0,
       });
-      if (plan.isNoOp) return;
+      if (plan.isNoOp) return false;
       const reroutedToGroup = Boolean(
         plan.rerouteGroupId && plan.rerouteGroupId !== initialGroupTarget,
       );
@@ -2100,17 +2100,21 @@ export function ShellPage() {
           cancelFocusPrompt();
         }
       };
+      // Keep the draft cleared once any part of the submission is confirmed accepted.
+      let accepted = false;
       try {
         if (plan.shouldRunRoutines) {
-          const sendNonce = newClientNonce();
-          await Promise.all(
+          // Settle every run first so one that was accepted is never repeated.
+          const runs = await Promise.allSettled(
             plan.routineIds.map((routineId) =>
               rpc.routines.testRun({
                 routineId,
-                clientNonce: `routine-mention:${sendNonce}:${routineId}`,
+                clientNonce: `routine-mention:${clientNonce}:${routineId}`,
               }),
             ),
           );
+          accepted = runs.some((run) => run.status === "fulfilled");
+          for (const run of runs) if (run.status === "rejected") throw run.reason;
         }
         if (!plan.shouldSend) {
           dropDelayedSetup();
@@ -2122,14 +2126,14 @@ export function ShellPage() {
           setAttachmentNotice(null);
           if (reroutedToGroup && groupTarget) {
             navigate(`/app/g/${groupTarget}`);
-            return;
+            return true;
           }
           if (groupTarget && activeGroupId.current === groupTarget) {
             await refreshGroupThreadRef.current(groupTarget);
           } else if (botTarget && activeBotId.current === botTarget) {
             await refreshThreadRef.current(botTarget);
           }
-          return;
+          return true;
         }
         const artifactIds: string[] = [];
         for (const pending of attachments) {
@@ -2145,7 +2149,6 @@ export function ShellPage() {
           );
           artifactIds.push(artifact.id);
         }
-        const clientNonce = newClientNonce();
         if (groupTarget) {
           await rpc.threads.send({
             groupId: groupTarget,
@@ -2156,6 +2159,7 @@ export function ShellPage() {
             replyToMessageId: reroutedToGroup ? undefined : activeReplyTarget?.id,
             replyQuote: reroutedToGroup ? undefined : (activeReplyQuote ?? undefined),
           });
+          accepted = true;
         } else if (botTarget) {
           const sent = await rpc.threads.send({
             botId: botTarget,
@@ -2166,6 +2170,7 @@ export function ShellPage() {
             replyToMessageId: activeReplyTarget?.id,
             replyQuote: activeReplyQuote ?? undefined,
           });
+          accepted = true;
           if (activeBotId.current === botTarget) {
             updateSnapshot((current) =>
               applyThreadSendReceipt(
@@ -2190,12 +2195,13 @@ export function ShellPage() {
         void refreshBots().catch(() => undefined);
         if (reroutedToGroup && groupTarget) {
           navigate(`/app/g/${groupTarget}`);
-          return;
+          return true;
         }
         if (groupTarget && activeGroupId.current === groupTarget) setAttachmentNotice(null);
         if (botTarget && activeBotId.current === botTarget) setAttachmentNotice(null);
         if (groupTarget) void refreshGroupThreadRef.current(groupTarget).catch(() => undefined);
         else if (botTarget) void refreshThreadRef.current(botTarget).catch(() => undefined);
+        return true;
       } catch (error) {
         if (reroutedToGroup && groupTarget) {
           setSendError(errorText(error, t`Failed to send message`));
@@ -2204,6 +2210,7 @@ export function ShellPage() {
         } else if (botTarget && activeBotId.current === botTarget) {
           setSendError(errorText(error, t`Failed to send message`));
         }
+        return accepted;
       } finally {
         sendingRef.current = false;
         setSending(false);
@@ -3375,6 +3382,20 @@ export function ShellPage() {
               align="start"
               className="w-[calc(316px-1.5rem)] max-w-[calc(100vw-3rem)] gap-0 p-1 data-closed:animate-none"
             >
+              {bootstrapMe?.ticketBoardEnabled ? (
+                <Button
+                  variant="ghost"
+                  className="w-full justify-start font-normal"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setMobileSidebarOpen(false);
+                    navigate("/app/board");
+                  }}
+                >
+                  <SquareKanban className="text-muted-foreground" strokeWidth={1.75} />
+                  <Trans>Board</Trans>
+                </Button>
+              ) : null}
               <Button
                 variant="ghost"
                 className="w-full justify-start font-normal"
@@ -3960,6 +3981,16 @@ export function ShellPage() {
                       await ensureWebhookSecret(targetBotId);
                     }
                     const crons = routineDraft.schedules.map(cronFromPreset);
+                    const model = routineDraft.modelKey
+                      ? parseModelOptionKey(routineDraft.modelKey)
+                      : null;
+                    const routineModel = {
+                      modelProvider: model?.provider ?? null,
+                      modelId: model?.modelId ?? null,
+                      thinkingLevel: (model && routineDraft.thinkingLevel
+                        ? routineDraft.thinkingLevel
+                        : null) as ThinkingLevel | null,
+                    };
                     let saved: Routine;
                     if (targetRoutine) {
                       const armOneShot = routineNeedsOneShotArm(targetRoutine, crons);
@@ -3985,6 +4016,11 @@ export function ShellPage() {
                         webhookEnabled: routineDraft.webhookEnabled,
                         githubEnabled: routineDraft.githubEnabled,
                         messageProvider: routineDraft.messageProvider,
+                        ...(routineModel.modelProvider !== targetRoutine.modelProvider ||
+                        routineModel.modelId !== targetRoutine.modelId ||
+                        routineModel.thinkingLevel !== targetRoutine.thinkingLevel
+                          ? routineModel
+                          : {}),
                         ...(runAt ? { runAt } : {}),
                       });
                     } else {
@@ -3999,6 +4035,7 @@ export function ShellPage() {
                         webhookEnabled: routineDraft.webhookEnabled,
                         githubEnabled: routineDraft.githubEnabled,
                         messageProvider: routineDraft.messageProvider,
+                        ...routineModel,
                       });
                     }
                     if (
@@ -5273,7 +5310,7 @@ const QuoteSelectionButton = memo(function QuoteSelectionButton({
   );
 });
 
-const Composer = memo(function Composer({
+export const Composer = memo(function Composer({
   artifactTarget,
   activeName,
   running,
@@ -5313,9 +5350,9 @@ const Composer = memo(function Composer({
   onDismissError: () => void;
   sending: boolean;
   fileInputRef: RefObject<HTMLInputElement | null>;
-  onAttachmentPick: (files: FileList | null) => void | Promise<void>;
+  onAttachmentPick: (files: FileList | null) => boolean;
   onRemoveAttachment: (attachment: PendingAttachment) => void;
-  onSend: (text: string, mentions?: ComposerMention[]) => Promise<void>;
+  onSend: (text: string, mentions: ComposerMention[], clientNonce: string) => Promise<boolean>;
   onStop: () => Promise<void>;
   onVoice?: () => void;
   artifactTarget: ArtifactTarget;
@@ -5335,6 +5372,18 @@ const Composer = memo(function Composer({
   const [slashQuery, setSlashQuery] = useState<string | null>(null);
   const [selectedSkill, setSelectedSkill] = useState<AgentSkillCatalogEntry | null>(null);
   const [selectedMentions, setSelectedMentions] = useState<ComposerMention[]>([]);
+  const editRevision = useRef(0);
+  const retryNonce = useRef<string | null>(null);
+  const replyId = replyTarget?.id ?? null;
+  const quote = replyTarget ? (replyQuote ?? null) : null;
+  const previousReply = useRef({ id: replyId, quote });
+  useEffect(() => {
+    if (previousReply.current.id !== replyId || previousReply.current.quote !== quote) {
+      editRevision.current += 1;
+      retryNonce.current = null;
+      previousReply.current = { id: replyId, quote };
+    }
+  }, [replyId, quote]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [composerExpanded, setComposerExpanded] = useState(false);
   const attachButtonRef = useRef<HTMLButtonElement>(null);
@@ -5446,7 +5495,18 @@ const Composer = memo(function Composer({
     return () => observer.disconnect();
   }, [draft]);
 
+  function markEdited() {
+    editRevision.current += 1;
+    retryNonce.current = null;
+  }
+
+  function pickAttachments(files: FileList | null) {
+    if (!files?.length) return;
+    if (onAttachmentPick(files)) markEdited();
+  }
+
   function updateDraft(value: string) {
+    markEdited();
     setDraft(value);
     const mentionMatch = /(?:^|\s)@([\w-]*)$/.exec(value);
     setMentionQuery(mentionMatch ? (mentionMatch[1] ?? "") : null);
@@ -5462,6 +5522,7 @@ const Composer = memo(function Composer({
   }
 
   function insertMention(mention: ComposerMention) {
+    markEdited();
     setDraft((current) => current.replace(/@([\w-]*)$/, ""));
     setMentionQuery(null);
     setMentionHighlightIndex(0);
@@ -5474,18 +5535,21 @@ const Composer = memo(function Composer({
   }
 
   function insertSkill(skill: AgentSkillCatalogEntry) {
+    markEdited();
     setSelectedSkill(skill);
     setDraft("");
     setSlashQuery(null);
   }
 
   function runSlashAction(action: SlashActionId) {
+    markEdited();
     setDraft("");
     setSlashQuery(null);
     onSlashAction?.(action);
   }
 
   function removeLastChip() {
+    markEdited();
     if (selectedMentions.length > 0) {
       setSelectedMentions((current) => current.slice(0, -1));
       return;
@@ -5540,8 +5604,11 @@ const Composer = memo(function Composer({
     mentionQuery === null &&
     (slashSkillOptions.length > 0 || slashActionOptions.length > 0);
 
-  function send() {
+  async function send() {
     if (!canSend || sending || disabled) return;
+    const revision = editRevision.current;
+    const clientNonce = retryNonce.current ?? newClientNonce();
+    retryNonce.current = null;
     const text = serializeComposerPrompt(draft, selectedSkill, selectedMentions);
     setDraft("");
     setMentionQuery(null);
@@ -5550,7 +5617,18 @@ const Composer = memo(function Composer({
     setSelectedSkill(null);
     const mentions = selectedMentions;
     setSelectedMentions([]);
-    void onSend(text, mentions);
+    try {
+      if ((await onSend(text, mentions, clientNonce)) !== false) return;
+    } catch {
+      // A rejected callback leaves acceptance unknown; do not restore a possible send.
+      return;
+    }
+    // Restore only an untouched draft, retaining its nonce for an unchanged retry.
+    if (editRevision.current !== revision) return;
+    retryNonce.current = clientNonce;
+    setDraft(draft);
+    setSelectedSkill(selectedSkill);
+    setSelectedMentions(mentions);
   }
 
   function handleDragEnter(event: DragEvent<HTMLFieldSetElement>) {
@@ -5596,7 +5674,7 @@ const Composer = memo(function Composer({
     event.preventDefault();
     dragDepth.current = 0;
     setDraggingFiles(false);
-    if (!disabled) void onAttachmentPick(dataTransfer.files);
+    if (!disabled) pickAttachments(dataTransfer.files);
   }
 
   function handlePaste(event: ClipboardEvent<HTMLTextAreaElement>) {
@@ -5604,7 +5682,7 @@ const Composer = memo(function Composer({
     // Only intercept real FileList pastes; leave text-only / empty-files native.
     if (disabled || !clipboardData || !isFilePaste(clipboardData)) return;
     event.preventDefault();
-    void onAttachmentPick(clipboardData.files);
+    pickAttachments(clipboardData.files);
     const text = clipboardData.getData("text/plain");
     if (!text) return;
     const textarea = event.currentTarget;
@@ -5793,7 +5871,10 @@ const Composer = memo(function Composer({
               <button
                 type="button"
                 aria-label={t`Remove ${attachment.file.name}`}
-                onClick={() => onRemoveAttachment(attachment)}
+                onClick={() => {
+                  markEdited();
+                  onRemoveAttachment(attachment);
+                }}
                 className="text-muted-foreground hover:text-foreground"
               >
                 <X size={13} strokeWidth={2} />
@@ -5900,7 +5981,7 @@ const Composer = memo(function Composer({
           multiple
           accept={ATTACHMENT_ACCEPT}
           className="hidden"
-          onChange={(event) => void onAttachmentPick(event.target.files)}
+          onChange={(event) => pickAttachments(event.target.files)}
         />
         <Button
           ref={attachButtonRef}
@@ -5933,7 +6014,10 @@ const Composer = memo(function Composer({
               <button
                 type="button"
                 aria-label={t`Remove skill ${selectedSkill.name}`}
-                onClick={() => setSelectedSkill(null)}
+                onClick={() => {
+                  markEdited();
+                  setSelectedSkill(null);
+                }}
                 className="text-muted-foreground hover:text-foreground"
               >
                 <X size={12} strokeWidth={2} />
@@ -5954,13 +6038,14 @@ const Composer = memo(function Composer({
               <button
                 type="button"
                 aria-label={t`Remove mention ${mention.name}`}
-                onClick={() =>
+                onClick={() => {
+                  markEdited();
                   setSelectedMentions((current) =>
                     current.filter(
                       (selected) => mentionChipKey(selected) !== mentionChipKey(mention),
                     ),
-                  )
-                }
+                  );
+                }}
                 className="text-muted-foreground hover:text-foreground"
               >
                 <X size={12} strokeWidth={2} />
@@ -6009,7 +6094,7 @@ const Composer = memo(function Composer({
               }
               if (action.type === "send") {
                 event.preventDefault();
-                send();
+                void send();
               }
             }}
             disabled={disabled}

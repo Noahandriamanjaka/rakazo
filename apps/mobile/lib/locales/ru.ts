@@ -165,6 +165,16 @@ export const RU_MESSAGES: Record<string, string> = {
   "Clear conversation?": "Очистить диалог?",
   "Close chat organization": "Закрыть организацию чатов",
   "Close computer": "Закрыть компьютер",
+  "Computer keyboard": "Клавиатура компьютера",
+  Control: "Ctrl",
+  Down: "Вниз",
+  Escape: "Esc",
+  "Hide keyboard": "Скрыть клавиатуру",
+  Left: "Влево",
+  Right: "Вправо",
+  "Show keyboard": "Показать клавиатуру",
+  Tab: "Tab",
+  Up: "Вверх",
   "Close preview": "Закрыть предварительный просмотр",
   Code: "Код",
   Color: "Цвет",
@@ -659,7 +669,7 @@ export const RU_MESSAGES: Record<string, string> = {
     "Встроенный голос телефона. Бесплатно, без аккаунта",
   "Could not save that preference": "Не удалось сохранить эту настройку",
   Username: "Имя пользователя",
-  // app/models.tsx
+  // app/(settings)/models.tsx
   "Add connected model": "Добавить подключённую модель",
   "Add connected models to use them as backups.":
     "Добавьте подключённые модели, чтобы использовать их как резервные.",
@@ -728,7 +738,17 @@ export const RU_MESSAGES: Record<string, string> = {
     "Встроенный голос телефона — бесплатно, без аккаунта",
   "Speaks with your phone's own text-to-speech instead of a connected provider.":
     "Озвучивает встроенным синтезом речи телефона вместо подключённого провайдера.",
-
+  "Call sounds": "Звуки звонка",
+  "Hello {name}, {bot} here.": "Привет, {name}, это {bot}.",
+  "Hello, {bot} here.": "Привет, это {bot}.",
+  "OK, switching to {name}.": "Хорошо, переключаю на {name}.",
+  "{bot} here. Hi {name}.": "Это {bot}. Привет, {name}.",
+  "{bot} here.": "Это {bot}.",
+  "Waiting sound": "Звук ожидания",
+  "Device voice": "Голос устройства",
+  "Could not load voices": "Не удалось загрузить голоса",
+  "Hi, I'm {name}.": "Привет, я {name}.",
+  "Hi, this is how I'll sound.": "Привет, вот так я звучу.",
   "Open external link?": "Открыть внешнюю ссылку?",
   Open: "Открыть",
   // ai-data-sharing

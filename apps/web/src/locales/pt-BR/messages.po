@@ -389,6 +389,7 @@ msgstr "Adicionando"
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
 #: src/pages/PluginsOverlay.tsx
+#: src/pages/RoutineEditor.tsx
 #: src/pages/RoutineSchedule.tsx
 #: src/pages/shell/bot-panel.tsx
 msgid "Advanced"
@@ -664,6 +665,7 @@ msgid "Avatars"
 msgstr ""
 
 #: src/components/computer/FilesApp.tsx
+#: src/pages/Board.tsx
 #: src/pages/PluginsOverlay.tsx
 #: src/pages/RoutineEditor.tsx
 msgid "Back"
@@ -707,6 +709,15 @@ msgstr "Token portador"
 msgid "Billing"
 msgstr ""
 
+#: src/lib/ticket-status.ts
+msgid "Blocked"
+msgstr ""
+
+#: src/pages/Board.tsx
+#: src/pages/Shell.tsx
+msgid "Board"
+msgstr ""
+
 #: src/pages/Shell.tsx
 msgid "Booting live desktop…"
 msgstr "Iniciando a área de trabalho ao vivo..."
@@ -742,6 +753,10 @@ msgstr "Pré-visualização da tela"
 #: src/pages/MessagingSettingsOverlay.tsx
 msgid "Bot to link"
 msgstr ""
+
+#: src/pages/RoutineEditor.tsx
+msgid "Bot's model"
+msgstr "Modelo do bot"
 
 #: src/pages/Artifacts.tsx
 msgid "Bots"
@@ -1045,6 +1060,10 @@ msgstr "Comando"
 #: src/pages/shell/bot-credentials.tsx
 msgid "Command variable"
 msgstr "Variável de comando"
+
+#: src/pages/Board.tsx
+msgid "Comment"
+msgstr ""
 
 #: src/pages/ScratchpadSection.tsx
 msgid "Complete"
@@ -1692,6 +1711,7 @@ msgstr ""
 msgid "Couldn't update messaging settings"
 msgstr ""
 
+#: src/pages/Board.tsx
 #: src/pages/Shell.tsx
 #: src/pages/shell/bot-panel.tsx
 #: src/pages/shell/dialogs.tsx
@@ -1825,6 +1845,7 @@ msgstr ""
 #. placeholder {0}: thinkingLevelLabel("medium")
 #. placeholder {0}: thinkingLevelLabel(defaultThinkingLevel)
 #: src/pages/Onboarding.tsx
+#: src/pages/RoutineEditor.tsx
 #: src/pages/shell/bot-panel.tsx
 msgid "Default ({0})"
 msgstr "Padrão ({0})"
@@ -1908,6 +1929,7 @@ msgstr "Padrão de implantação"
 msgid "Describe what this bot does"
 msgstr "Descreva o que este bot faz"
 
+#: src/pages/Board.tsx
 #: src/pages/shell/bot-panel.tsx
 msgid "Description"
 msgstr "Descrição"
@@ -1984,6 +2006,7 @@ msgstr "O Docker limita o acesso ao seu computador para maior segurança. Usar {
 msgid "Don’t have an account?"
 msgstr "Não tem uma conta?"
 
+#: src/lib/ticket-status.ts
 #: src/pages/ActivityList.tsx
 #: src/pages/shell/avatar-studio-popover.tsx
 msgid "Done"
@@ -2353,6 +2376,7 @@ msgstr ""
 msgid "Hide transcript"
 msgstr "Ocultar transcrição"
 
+#: src/lib/ticket-priority.ts
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
 msgid "High"
@@ -2399,6 +2423,14 @@ msgstr "Área de envio de imagem"
 #: src/pages/PluginsOverlay.tsx
 msgid "Import OpenAPI JSON"
 msgstr "Importar OpenAPI JSON"
+
+#: src/lib/ticket-status.ts
+msgid "In progress"
+msgstr ""
+
+#: src/lib/ticket-status.ts
+msgid "In review"
+msgstr ""
 
 #: src/pages/BillingSettingsPanel.tsx
 msgid "Inactive"
@@ -2609,6 +2641,7 @@ msgstr ""
 msgid "Log out"
 msgstr "Sair"
 
+#: src/lib/ticket-priority.ts
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
 msgid "Low"
@@ -2805,6 +2838,7 @@ msgstr "minutos"
 
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
+#: src/pages/RoutineEditor.tsx
 #: src/pages/shell/bot-panel.tsx
 msgid "Model"
 msgstr "Modelo"
@@ -2949,6 +2983,10 @@ msgstr "Nova habilidade"
 msgid "New space"
 msgstr ""
 
+#: src/pages/Board.tsx
+msgid "New ticket"
+msgstr ""
+
 #: src/pages/MessagingSettingsOverlay.tsx
 msgid "No agent connections yet."
 msgstr ""
@@ -3058,6 +3096,10 @@ msgstr "Ainda não há habilidades"
 msgid "No team conversations yet."
 msgstr ""
 
+#: src/pages/Board.tsx
+msgid "No tickets yet"
+msgstr ""
+
 #: src/pages/PluginsOverlay.tsx
 msgid "No tools available."
 msgstr ""
@@ -3069,6 +3111,10 @@ msgstr ""
 #: src/pages/ScratchpadSection.tsx
 msgid "None yet"
 msgstr "Nenhuma ainda"
+
+#: src/lib/ticket-priority.ts
+msgid "Normal"
+msgstr ""
 
 #: src/pages/ModelBackupsSettings.tsx
 msgid "Not connected"
@@ -3240,6 +3286,10 @@ msgstr "Mensagem original indisponível"
 msgid "Other model…"
 msgstr "Outro modelo..."
 
+#: src/pages/Board.tsx
+msgid "Owner"
+msgstr ""
+
 #: src/pages/RoutineEditor.tsx
 msgid "PagerDuty incident"
 msgstr ""
@@ -3330,6 +3380,10 @@ msgstr "Pré-visualizar {0}"
 
 #: src/pages/Artifacts.tsx
 msgid "Preview isn't available for this file type — download it to view it."
+msgstr ""
+
+#: src/pages/Board.tsx
+msgid "Priority"
 msgstr ""
 
 #: src/pages/shell/bot-panel.tsx
@@ -3745,6 +3799,7 @@ msgstr ""
 
 #: src/components/AskCard.tsx
 #: src/components/teach/SkillDraftCard.tsx
+#: src/pages/Board.tsx
 #: src/pages/ExternalConversationSettings.tsx
 #: src/pages/GroupPanel.tsx
 #: src/pages/KnowledgeSection.tsx
@@ -4140,6 +4195,7 @@ msgid "Starting…"
 msgstr "Iniciando…"
 
 #: src/pages/ActivityList.tsx
+#: src/pages/Board.tsx
 msgid "Status"
 msgstr ""
 
@@ -4289,6 +4345,7 @@ msgstr ""
 
 #: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
+#: src/pages/RoutineEditor.tsx
 #: src/pages/shell/bot-panel.tsx
 msgid "Thinking"
 msgstr "Pensando"
@@ -4382,6 +4439,7 @@ msgstr ""
 msgid "Time of day"
 msgstr "Hora do dia"
 
+#: src/pages/Board.tsx
 #: src/pages/shell/bot-panel.tsx
 msgid "Title"
 msgstr "Título"
@@ -4393,6 +4451,10 @@ msgstr ""
 #. placeholder {0}: filters.dateRange.to
 #: src/pages/ActivityList.tsx
 msgid "To {0}"
+msgstr ""
+
+#: src/lib/ticket-status.ts
+msgid "To do"
 msgstr ""
 
 #: src/pages/shell/bot-picker.tsx
@@ -4546,6 +4608,10 @@ msgstr "Atualizando…"
 #: src/pages/shell/avatar-studio-popover.tsx
 msgid "Upload"
 msgstr "Enviar"
+
+#: src/lib/ticket-priority.ts
+msgid "Urgent"
+msgstr ""
 
 #: src/pages/AccountSettingsOverlay.tsx
 #: src/pages/SettingsOverlay.tsx
@@ -4702,6 +4768,10 @@ msgstr "Quando usar"
 #: src/pages/HostComputerPrompt.tsx
 msgid "Where should bots run?"
 msgstr "Onde os bots devem ser executados?"
+
+#: src/lib/ticket-status.ts
+msgid "Won't do"
+msgstr ""
 
 #: src/lib/roster-status.ts
 #: src/pages/Auth.tsx

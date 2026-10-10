@@ -10,6 +10,7 @@ import {
 import { ThreadMessageSchema } from "./events.js";
 import { Id, MemoryScope, RunStatus, SandboxKind } from "./ids.js";
 import { McpHeadersSchema, McpRemoteEndpointSchema, McpTransportSchema } from "./mcp.js";
+import { RunTriggerSchema } from "./runs.js";
 
 export const ComputerModeSchema = z.enum(["team", "dedicated"]);
 export type ComputerMode = z.infer<typeof ComputerModeSchema>;
@@ -369,6 +370,37 @@ export const UpdateBotInput = z
     }
   });
 
+/**
+ * A routine's model is optional, but provider and id only mean something together,
+ * and a thinking level belongs to a model this routine actually names.
+ */
+export function routineModelIssues(
+  value: {
+    modelProvider?: string | null;
+    modelId?: string | null;
+    thinkingLevel?: string | null;
+  },
+  ctx: { addIssue: (issue: { code: "custom"; message: string; path: string[] }) => void },
+) {
+  const providerProvided = value.modelProvider !== undefined && value.modelProvider !== null;
+  const modelProvided = value.modelId !== undefined && value.modelId !== null;
+  if (providerProvided !== modelProvided) {
+    ctx.addIssue({
+      code: "custom",
+      message: "Model provider and model id must both be set or both cleared",
+      path: ["modelId"],
+    });
+    return;
+  }
+  if (value.thinkingLevel && !providerProvided) {
+    ctx.addIssue({
+      code: "custom",
+      message: "Pick a model for this routine first",
+      path: ["thinkingLevel"],
+    });
+  }
+}
+
 export const RoutineSchema = z.object({
   id: Id,
   botId: Id,
@@ -386,6 +418,10 @@ export const RoutineSchema = z.object({
     .max(50)
     .regex(/^[a-z0-9._-]+$/i)
     .nullable(),
+  /** Null runs this routine on its bot's model. */
+  modelProvider: z.string().nullable(),
+  modelId: z.string().nullable(),
+  thinkingLevel: ThinkingLevelSchema.nullable(),
   lastRunAt: z.string().nullable(),
   nextRunAt: z.string().nullable(),
   createdAt: z.string(),
@@ -410,8 +446,12 @@ export const CreateRoutineInput = z
       .regex(/^[a-z0-9._-]+$/i)
       .nullable()
       .default(null),
+    modelProvider: z.string().trim().min(1).max(80).nullable().default(null),
+    modelId: z.string().trim().min(1).max(200).nullable().default(null),
+    thinkingLevel: ThinkingLevelSchema.nullable().default(null),
   })
   .superRefine((value, ctx) => {
+    routineModelIssues(value, ctx);
     if (
       value.crons.length === 0 &&
       !value.webhookEnabled &&
@@ -869,21 +909,7 @@ export const RunSchema = z.object({
   threadId: Id,
   taskId: Id,
   status: RunStatus,
-  trigger: z.enum([
-    "user",
-    "routine",
-    "resume",
-    "follow_up",
-    "reaction",
-    "call_end",
-    "spawn",
-    "skill",
-    "bot_message",
-    "webhook",
-    "messaging",
-    "cloud_agent",
-    "created",
-  ]),
+  trigger: RunTriggerSchema,
   routineId: Id.nullable(),
   modelProvider: z.string().nullable(),
   modelId: z.string().nullable(),
@@ -1314,6 +1340,7 @@ export const ServerUpdateRequestSchema = z.object({
 export type ServerUpdateRequest = z.infer<typeof ServerUpdateRequestSchema>;
 
 export const MeSchema = z.object({
+  ticketBoardEnabled: z.boolean(),
   userId: Id,
   email: z.string().email(),
   name: z.string(),
@@ -1377,7 +1404,9 @@ export const ExportManifestSchema = z.object({
   bot: BotSchema.pick({ name: true, title: true, description: true, instructions: true }),
   memory: z.array(z.object({ path: z.string(), content: z.string() })),
   routines: z.array(RoutineSchema.pick({ name: true, prompt: true, crons: true, timezone: true })),
-  files: z.array(z.object({ path: z.string(), content: z.string() })),
+  files: z.array(
+    z.object({ path: z.string(), content: z.string(), encoding: z.literal("base64").optional() }),
+  ),
   history: z.array(ThreadMessageSchema),
 });
 export type ExportManifest = z.infer<typeof ExportManifestSchema>;
