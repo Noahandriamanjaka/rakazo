@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Rakazo",
+    "name": "Rakazo SH",
     "slug": "rakazo",
     "owner": "inbox-zero",
     "scheme": "rakazo",
@@ -73,8 +73,8 @@
       }
     },
     "android": {
-      "package": "com.rakazo.app",
-      "versionCode": 10,
+      "package": "com.rakazosh.app",
+      "versionCode": 12,
       "softwareKeyboardLayoutMode": "resize",
       "icon": "./assets/icon.png",
       "adaptiveIcon": {
@@ -100,4 +100,4 @@
       "url": "https://u.expo.dev/07f7eb04-45e3-47fe-9374-99a2f991131e"
     }
   }
-}
+}\n
