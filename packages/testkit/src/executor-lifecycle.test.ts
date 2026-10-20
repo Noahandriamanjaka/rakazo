@@ -5,6 +5,7 @@ import {
   acquireComputerExecutionLease,
   acquireDedicatedScreenLeaseFence,
   ComputerBusyError,
+  DestinationEmulator,
   releaseComputerExecutionLease,
 } from "@rakazo/adapters";
 import { approvalEffectKey } from "@rakazo/core/node/approval-effect-key";
@@ -22,6 +23,7 @@ const describeIntegration = hasDb ? describe : describe.skip;
 
 describeIntegration("run executor lifecycle", () => {
   let handles: Awaited<ReturnType<typeof createApp>>;
+  const destination = new DestinationEmulator();
   const dataDir = mkdtempSync(path.join(tmpdir(), "rakazo-executor-lifecycle-"));
   const stamp = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
@@ -35,6 +37,7 @@ describeIntegration("run executor lifecycle", () => {
       wakeupDriver: "memory",
       defaultProvider: "scripted",
       defaultModel: "scripted",
+      connectors: [destination],
     });
   });
 
@@ -86,12 +89,12 @@ describeIntegration("run executor lifecycle", () => {
       status,
       completedAt: new Date(),
     });
-    const recordsBefore = handles.connector.records.length;
+    const recordsBefore = destination.records.length;
 
     await handles.executor.continueRun(seeded.run.id, "late-worker");
 
     expect(await handles.prisma.attempt.count({ where: { runId: seeded.run.id } })).toBe(0);
-    expect(handles.connector.records).toHaveLength(recordsBefore);
+    expect(destination.records).toHaveLength(recordsBefore);
     await expect(
       handles.prisma.run.findUniqueOrThrow({ where: { id: seeded.run.id } }),
     ).resolves.toMatchObject({ status });
@@ -112,7 +115,7 @@ describeIntegration("run executor lifecycle", () => {
         request: args,
       },
     });
-    const recordsBefore = handles.connector.records.length;
+    const recordsBefore = destination.records.length;
 
     await handles.executor.continueRun(seeded.run.id, "retry-worker");
 
@@ -127,7 +130,7 @@ describeIntegration("run executor lifecycle", () => {
       status: "uncertain",
       result: expect.objectContaining({ uncertain: true }),
     });
-    expect(handles.connector.records).toHaveLength(recordsBefore);
+    expect(destination.records).toHaveLength(recordsBefore);
     expect(
       await handles.prisma.event.count({
         where: { runId: seeded.run.id, type: "effect.reconciled" },
@@ -159,7 +162,7 @@ describeIntegration("run executor lifecycle", () => {
         matchValue: "destination.write",
       },
     });
-    const recordsBefore = handles.connector.records.length;
+    const recordsBefore = destination.records.length;
 
     await handles.executor.continueRun(seeded.run.id, "retry-worker");
 
@@ -178,7 +181,7 @@ describeIntegration("run executor lifecycle", () => {
         expect.objectContaining({ kind: "ask", approvalEffectId: effect.id, status: "pending" }),
       ]),
     );
-    expect(handles.connector.records).toHaveLength(recordsBefore);
+    expect(destination.records).toHaveLength(recordsBefore);
   });
 
   it("fences concurrent terminal commits so only one final message is durable", async () => {
@@ -753,8 +756,9 @@ describeIntegration("run executor lifecycle", () => {
     const continuation = await handles.prisma.run.findUniqueOrThrow({
       where: { id: result.continuationRunId },
     });
+    // The direct-line delivery in the batch keeps the continuation from counting as owner-started.
     expect(continuation).toMatchObject({
-      trigger: "follow_up",
+      trigger: "messaging",
       sourceMessageId: privateMessage.id,
     });
     const steering = await handles.prisma.steeringMessage.findUniqueOrThrow({
@@ -955,6 +959,7 @@ describeIntegration("run executor lifecycle", () => {
       });
       expect(later.fence).toBe(9);
 
+      await releaseComputerExecutionLease(handles.prisma, later);
       const staleRun = await createRunForBot(seeded, "stale-dedicated-worker", {
         status: "running",
         leaseOwner: "worker-current",
@@ -1004,12 +1009,22 @@ describeIntegration("run executor lifecycle", () => {
         });
       const attempts = await Promise.allSettled(parallelRuns.map(allocateParallel));
       const parallelLeases = [];
+      expect(attempts.filter((attempt) => attempt.status === "fulfilled")).toHaveLength(1);
+      // Release the winner before retrying a competing worker, irrespective of order.
+      for (const attempt of attempts) {
+        if (attempt.status === "fulfilled") {
+          await releaseComputerExecutionLease(handles.prisma, attempt.value);
+        }
+      }
       for (const [index, attempt] of attempts.entries()) {
-        if (attempt.status === "fulfilled") parallelLeases.push(attempt.value);
-        else {
+        if (attempt.status === "fulfilled") {
+          parallelLeases.push(attempt.value);
+        } else {
           expect(attempt.reason).toBeInstanceOf(ComputerBusyError);
           // Match the worker's retry after the competing allocation completes.
-          parallelLeases.push(await allocateParallel(parallelRuns[index]!, index));
+          const lease = await allocateParallel(parallelRuns[index]!, index);
+          parallelLeases.push(lease);
+          await releaseComputerExecutionLease(handles.prisma, lease);
         }
       }
       expect(parallelLeases.map((lease) => lease.fence).sort((a, b) => a - b)).toEqual([10, 11]);
@@ -1031,6 +1046,78 @@ describeIntegration("run executor lifecycle", () => {
         },
       });
     }
+  });
+
+  it("resumes its own dedicated screen and admits other runs only after expiry or pause", async () => {
+    const seeded = await seedRun(
+      "dedicated-screen-lifetime",
+      "exercise lease lifetime",
+      {
+        status: "running",
+        leaseOwner: "worker-first",
+        leaseFence: 1,
+        leaseExpiresAt: new Date(Date.now() + 60_000),
+      },
+      "dedicated",
+    );
+    const bot = await handles.prisma.bot.findUniqueOrThrow({ where: { id: seeded.bot.id } });
+    const computerId = bot.computerId!;
+    const input = {
+      computerId,
+      botId: bot.id,
+      runId: seeded.run.id,
+      workerId: "worker-first",
+      runFence: 1,
+    };
+    const first = await acquireDedicatedScreenLeaseFence(handles.prisma, input);
+    const resumed = await acquireDedicatedScreenLeaseFence(handles.prisma, input);
+    expect(resumed.fence).toBe(first.fence + 1);
+    const other = await createRunForBot(seeded, "competing-screen", {
+      status: "running",
+      leaseOwner: "worker-other",
+      leaseFence: 1,
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+    });
+    const otherInput = { ...input, runId: other.id, workerId: "worker-other" };
+    await expect(
+      acquireDedicatedScreenLeaseFence(handles.prisma, otherInput),
+    ).rejects.toBeInstanceOf(ComputerBusyError);
+    await handles.prisma.computerExecutionLease.updateMany({
+      where: { runId: seeded.run.id },
+      data: { expiresAt: new Date(Date.now() - 1) },
+    });
+    const reclaimed = await acquireDedicatedScreenLeaseFence(handles.prisma, otherInput);
+    expect(reclaimed.fence).toBe(resumed.fence + 1);
+    const attempt = await handles.prisma.attempt.create({
+      data: { runId: other.id, fence: 1, status: "running" },
+    });
+    const events = createThreadEvents(handles.prisma);
+    await expect(
+      events.pauseRunForInput({
+        spaceId: seeded.me.spaceId,
+        threadId: seeded.thread.id,
+        botId: bot.id,
+        runId: other.id,
+        attemptId: attempt.id,
+        leaseOwner: "worker-other",
+        leaseFence: 1,
+        blocks: [{ kind: "ask", text: "Which city?", status: "pending" }],
+      }),
+    ).resolves.toEqual({ continuationRunId: null });
+    const afterPause = await acquireDedicatedScreenLeaseFence(handles.prisma, input);
+    expect(afterPause.fence).toBe(reclaimed.fence + 1);
+    // A stale cleanup must not expire a successor's lease.
+    await releaseComputerExecutionLease(handles.prisma, reclaimed);
+    const held = await handles.prisma.computerExecutionLease.findUniqueOrThrow({
+      where: { computerId_botId: { computerId, botId: bot.id } },
+    });
+    expect(held.fence).toBe(afterPause.fence);
+    expect(held.expiresAt.getTime()).toBeGreaterThan(Date.now());
+    await releaseComputerExecutionLease(handles.prisma, afterPause);
+    await handles.prisma.run.update({
+      where: { id: seeded.run.id },
+      data: { status: "completed", leaseOwner: null, leaseExpiresAt: null },
+    });
   });
 
   it("isolates Team leases and rejects unassigned bots and live dedicated lease conflicts on PostgreSQL", async () => {

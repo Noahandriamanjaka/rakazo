@@ -12,6 +12,7 @@ const payloadSchemas = {
     routineId: z.string().min(1),
     scheduledFor: z.string().datetime({ offset: true }),
   }),
+  "routine.retry": z.object({ runId: z.string().min(1) }),
   "computer.update": z.object({ updateId: z.string().min(1) }),
   "computer.sleep": z.object({ computerId: z.string().min(1) }),
   "computer.control-expire": z.object({
@@ -19,9 +20,15 @@ const payloadSchemas = {
     leaseId: z.string().min(1),
   }),
   "skill.teaching-expire": z.object({ skillId: z.string().min(1) }),
+  "call.expire": z.object({ threadId: z.string().min(1), callId: z.string().min(1) }),
   "history.compact": z.object({ threadId: z.string().min(1) }),
   "messaging.deliver": z.object({ runId: z.string().min(1).optional() }),
   "cloud_agent.poll": z.object({ agentId: z.string().min(1) }),
+  "push.receipt": z.object({
+    userId: z.string().min(1),
+    ticketId: z.string().min(1),
+    tokenDigest: z.string().min(1),
+  }),
 } satisfies { [Name in BackgroundJobName]: z.ZodType<BackgroundJobPayloads[Name]> };
 
 export function parseBackgroundJob(name: string, payload: unknown): BackgroundJob {
@@ -80,6 +87,16 @@ export function routineWakeupJob(routineId: string, scheduledFor: Date): Backgro
   };
 }
 
+/** Keyed to the failed run, so a repeated enqueue keeps a single retry. */
+export function routineRetryJob(runId: string, availableAt: Date): BackgroundJob {
+  return {
+    name: "routine.retry",
+    payload: { runId },
+    availableAt,
+    replaceKey: `routine.retry:${runId}`,
+  };
+}
+
 export function computerSleepJob(computerId: string, availableAt: Date): BackgroundJob {
   return {
     name: "computer.sleep",
@@ -111,6 +128,15 @@ export function skillTeachingExpireJob(skillId: string, availableAt: Date): Back
   };
 }
 
+export function callExpireJob(threadId: string, callId: string, availableAt: Date): BackgroundJob {
+  return {
+    name: "call.expire",
+    payload: { threadId, callId },
+    availableAt,
+    replaceKey: `call.expire:${callId}`,
+  };
+}
+
 export function historyCompactJobKey(threadId: string): string {
   return `history.compact:${threadId}`;
 }
@@ -139,6 +165,14 @@ export function historyCompactJob(threadId: string): BackgroundJob {
     replaceKey: historyCompactJobKey(threadId),
     maxAttempts: HISTORY_COMPACT_MAX_ATTEMPTS,
   };
+}
+
+/** A few tries ride out an Expo outage well inside the day it keeps receipts. */
+export function pushReceiptJob(
+  payload: BackgroundJobPayloads["push.receipt"],
+  availableAt: Date,
+): BackgroundJob {
+  return { name: "push.receipt", payload, availableAt, maxAttempts: 8 };
 }
 
 export function cloudAgentPollJobKey(agentId: string): string {

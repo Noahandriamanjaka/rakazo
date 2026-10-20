@@ -51,7 +51,12 @@ function mcpFetch(
     failNext: boolean;
     initializations: number;
     headers?: Record<string, string>[];
-    tools?: Array<{ name: string; description?: string; inputSchema: Record<string, unknown> }>;
+    tools?: Array<{
+      name: string;
+      description?: string;
+      inputSchema: Record<string, unknown>;
+      annotations?: { readOnlyHint?: boolean };
+    }>;
     calls?: string[];
   },
   expectedUrl = "https://mcp.example.test/mcp",
@@ -219,6 +224,53 @@ describe("MCP connector session cache", () => {
       await connector.close();
       await store.close();
       vi.useRealTimers();
+    }
+  });
+
+  it("reconnects when another process stored a new credential record", async () => {
+    const store = new EncryptedSecretStore("test-encryption-key-of-sufficient-length");
+    const context = {
+      operationId: "test",
+      traceId: "test",
+      spaceId: "w1",
+      userId: "u1",
+      botId: "bot-1",
+      signal: new AbortController().signal,
+    };
+    const first = await store.put(
+      JSON.stringify({ headers: { Authorization: "Bearer initial" } }),
+      context,
+    );
+    let current = { id: first.id, ciphertext: first.ciphertext };
+    const assignment = () => ({ ...ASSIGNMENT, server: { ...SERVER, secretId: current.id } });
+    const prisma = {
+      botMcpServer: {
+        findMany: vi.fn(async () => [assignment()]),
+        findFirst: vi.fn(async () => assignment()),
+      },
+      secret: { findFirst: vi.fn(async () => current) },
+    };
+    const state = { failNext: false, initializations: 0, headers: [] as Record<string, string>[] };
+    vi.stubGlobal("fetch", mcpFetch(state));
+    const connector = new McpConnector(prisma as never, store, { network: TEST_NETWORK });
+    try {
+      await connector.discoverTools(context);
+      await connector.discoverTools(context);
+      expect(state.initializations).toBe(1);
+
+      // A credential write from the worker leaves the old record readable here
+      // and does not bump the server revision.
+      const next = await store.put(
+        JSON.stringify({ headers: { Authorization: "Bearer from-worker" } }),
+        context,
+      );
+      current = { id: next.id, ciphertext: next.ciphertext };
+      await connector.discoverTools(context);
+
+      expect(state.initializations).toBe(2);
+      expect(state.headers.at(-1)?.authorization).toBe("Bearer from-worker");
+    } finally {
+      await connector.close();
     }
   });
 
@@ -1217,4 +1269,35 @@ describe("allowlistDrift", () => {
       stringAllowedCount: 1,
     });
   });
+});
+
+it("preserves explicit MCP read-only annotations for unattended consumers", async () => {
+  const state = {
+    failNext: false,
+    initializations: 0,
+    tools: [
+      { name: "read", inputSchema: { type: "object" }, annotations: { readOnlyHint: true } },
+      { name: "write", inputSchema: { type: "object" }, annotations: { readOnlyHint: false } },
+      { name: "unknown", inputSchema: { type: "object" } },
+    ],
+  };
+  vi.stubGlobal("fetch", mcpFetch(state));
+  const connector = new McpConnector(
+    { botMcpServer: { findMany: vi.fn(async () => [ASSIGNMENT]) } } as never,
+    new EncryptedSecretStore("fake-key"),
+    { network: TEST_NETWORK },
+  );
+  try {
+    const tools = await connector.discoverTools({
+      operationId: "test",
+      traceId: "test",
+      spaceId: "w1",
+      userId: "u1",
+      botId: "bot-1",
+      signal: new AbortController().signal,
+    });
+    expect(tools.map((tool) => tool.readOnly)).toEqual([true, false, undefined]);
+  } finally {
+    await connector.close();
+  }
 });

@@ -1,9 +1,11 @@
-import type { AgentRunRequest } from "@rakazo/adapter-kit";
+import type { AgentRunRequest, AgentRuntimeEvent } from "@rakazo/adapter-kit";
 import type { MessageBlock } from "@rakazo/contracts";
 import { describe, expect, it, vi } from "vitest";
-import { returnBotMessageOutcome } from "./bot-messages.js";
+import { loadBotMessageContext, returnBotMessageOutcome } from "./bot-messages.js";
 import type * as ComputerLifecycleModule from "./computer-lifecycle.js";
 import { createRunExecutor } from "./executor.js";
+import { createJobReconciler } from "./job-reconciler.js";
+import { userProgressClientNonce } from "./user-progress.js";
 
 vi.mock("./computer-lifecycle.js", async (importOriginal) => ({
   ...(await importOriginal<typeof ComputerLifecycleModule>()),
@@ -12,18 +14,40 @@ vi.mock("./computer-lifecycle.js", async (importOriginal) => ({
 }));
 
 vi.mock("./bot-messages.js", () => ({
-  loadBotMessageContext: async () => ({
+  loadBotMessageContext: vi.fn(async () => ({
     fromBotId: "caller",
     fromBotName: "Caller",
     text: "FYI",
     intent: "fyi",
     hop: 1,
     repliesToRequest: false,
-  }),
+  })),
   returnBotMessageOutcome: vi.fn(async () => undefined),
 }));
 
-async function runTurn(finalText: string, silent = true) {
+async function runTurn(
+  finalText: string,
+  silent = true,
+  narration: string | string[] = "I will check that.",
+  secrets: string[] = [],
+  intent: "fyi" | "request" | "question" = "fyi",
+  options: {
+    trigger?: string;
+    doneText?: string;
+    splitText?: boolean;
+    priorProgressText?: string;
+    runtimeEvents?: AgentRuntimeEvent[];
+  } = {},
+) {
+  vi.mocked(loadBotMessageContext).mockResolvedValue({
+    kind: "bot_message_received",
+    fromBotId: "caller",
+    fromBotName: "Caller",
+    text: "Look again",
+    intent,
+    hop: 1,
+    repliesToRequest: false,
+  });
   const run = {
     id: "run-1",
     botId: "bot-1",
@@ -32,23 +56,32 @@ async function runTurn(finalText: string, silent = true) {
     spaceId: "space-1",
     userId: "user-1",
     status: "queued",
-    trigger: silent ? "bot_message" : "user",
+    trigger: options.trigger ?? (silent ? "bot_message" : "user"),
     sourceMessageId: "source-1",
     leaseFence: 0,
   };
-  const narration = "I will check that.";
   const runtimeRun = vi.fn(async function* (_request: AgentRunRequest) {
-    yield { type: "text" as const, text: narration };
-    yield {
-      type: "tool" as const,
-      name: "read_file",
-      args: {},
-      executionId: "call-1",
-    };
+    if (options.runtimeEvents) {
+      yield* options.runtimeEvents;
+      return;
+    }
+    const narrations = Array.isArray(narration) ? narration : [narration];
+    for (const [index, text] of narrations.entries()) {
+      for (const chunk of options.splitText ? [...text] : [text]) {
+        yield { type: "text" as const, text: chunk };
+      }
+      yield {
+        type: "tool" as const,
+        name: "read_file",
+        args: {},
+        executionId: `call-${index + 1}`,
+      };
+    }
     if (finalText) yield { type: "text" as const, text: finalText };
-    yield { type: "done" as const, text: narration + finalText };
+    yield { type: "done" as const, text: options.doneText ?? narrations.join("") + finalText };
   });
   const prisma = {
+    user: { findUnique: vi.fn(async () => null) },
     run: {
       findUnique: vi.fn(async () => run),
       findUniqueOrThrow: vi.fn(async () => run),
@@ -88,8 +121,21 @@ async function runTurn(finalText: string, silent = true) {
       })),
     },
     message: {
-      findMany: vi.fn(async () => []),
-      findUnique: vi.fn(async () => null),
+      findMany: vi.fn(async ({ where }: { where: { runId?: string } }) =>
+        where.runId === run.id && options.priorProgressText
+          ? [
+              {
+                blocks: [{ kind: "text", text: options.priorProgressText }],
+                clientNonce: userProgressClientNonce(run.id),
+              },
+            ]
+          : [],
+      ),
+      findUnique: vi.fn(async () =>
+        run.trigger === "messaging"
+          ? { blocks: [{ kind: "channel_message", channelId: "channel-1" }] }
+          : null,
+      ),
       findFirst: vi.fn(async () => null),
     },
     task: {
@@ -132,6 +178,7 @@ async function runTurn(finalText: string, silent = true) {
   const finalizeRun = vi.fn(async (_input: { blocks: MessageBlock[] }) => ({
     continuationRunId: null,
   }));
+  const append = vi.fn(async (_event: { type: string; payload?: unknown }) => undefined);
   const executor = createRunExecutor({
     prisma,
     runtime: {
@@ -148,37 +195,202 @@ async function runTurn(finalText: string, silent = true) {
     home: { commit: vi.fn(async () => "fixture-revision") },
     memory: { read: async () => ({ documents: [] }) },
     memoryProviders: { resolve: async () => null },
-    events: { append: vi.fn(async () => undefined), finalizeRun },
+    events: { append, finalizeRun },
     jobs: { enqueue: vi.fn(async () => undefined) },
-    secrets: [],
+    secrets,
   } as unknown as Parameters<typeof createRunExecutor>[0]);
 
   await executor.continueRun(run.id, "worker-1");
   expect(runtimeRun).toHaveBeenCalled();
   expect(finalizeRun).not.toHaveBeenCalledWith(expect.objectContaining({ outcome: "failed" }));
-  return { finalizeRun };
+  return { finalizeRun, append };
 }
 
-describe("withheld narration on short peer turns", () => {
-  it.each(["", "Checked: all clear."])("returns only the post-tool final %j", async (finalText) => {
-    vi.mocked(returnBotMessageOutcome).mockClear();
-    const { finalizeRun } = await runTurn(finalText);
-    expect(finalizeRun).toHaveBeenCalledWith(expect.objectContaining({ outcome: "completed" }));
-    expect(finalizeRun.mock.calls[0]![0].blocks.filter((block) => block.kind === "text")).toEqual(
-      finalText ? [{ kind: "text", text: finalText }] : [],
-    );
-    if (finalText) {
+describe.each(["routine", "reaction", "bot_message", "messaging"])(
+  "held-back narration on %s runs",
+  (trigger) => {
+    it("restores the last non-empty narration as a normal final reply", async () => {
+      vi.mocked(returnBotMessageOutcome).mockClear();
+      const { finalizeRun, append } = await runTurn(
+        "",
+        true,
+        ["I will check that.", "  The draft is posted.  ", "   "],
+        [],
+        "fyi",
+        { trigger },
+      );
+      expect(finalizeRun).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          outcome: "completed",
+          markUnread: trigger !== "bot_message",
+        }),
+      );
+      expect(finalizeRun.mock.calls[0]![0].blocks.filter((block) => block.kind === "text")).toEqual(
+        [{ kind: "text", text: "The draft is posted." }],
+      );
+      expect(append.mock.calls.map(([event]) => event.type)).not.toContain(
+        "thread.message.created",
+      );
+      if (trigger === "bot_message") {
+        expect(returnBotMessageOutcome).toHaveBeenCalledExactlyOnceWith(
+          expect.anything(),
+          expect.anything(),
+          expect.anything(),
+          "The draft is posted.",
+          "result",
+        );
+      }
+    });
+
+    it("keeps a non-empty post-tool final", async () => {
+      const { finalizeRun } = await runTurn("Checked: all clear.", true, undefined, [], "fyi", {
+        trigger,
+      });
+      expect(finalizeRun.mock.calls[0]![0].blocks.filter((block) => block.kind === "text")).toEqual(
+        [{ kind: "text", text: "Checked: all clear." }],
+      );
+    });
+
+    it.each([
+      { narration: ["I will check that.", "NO_RESPONSE"], doneText: "" },
+      { narration: ["NO_RESPONSE", "The draft is posted."], doneText: "" },
+      { narration: ["I will check that. NO_RESPONSE"], doneText: "" },
+      { narration: ["NO_RESPONSENO_RESPONSE"], doneText: "" },
+      { narration: ["The draft is posted."], doneText: "NO_RESPONSE" },
+    ])("respects explicit silence in any turn: %j", async ({ narration, doneText }) => {
+      vi.mocked(returnBotMessageOutcome).mockClear();
+      const { finalizeRun } = await runTurn("", true, narration, [], "fyi", {
+        trigger,
+        doneText,
+        splitText: true,
+      });
+      expect(finalizeRun.mock.calls[0]![0].blocks.filter((block) => block.kind === "text")).toEqual(
+        [],
+      );
+      expect(returnBotMessageOutcome).not.toHaveBeenCalled();
+    });
+
+    it("respects an explicit silent final", async () => {
+      const { finalizeRun } = await runTurn("NO_RESPONSE", true, undefined, [], "fyi", { trigger });
+      expect(finalizeRun.mock.calls[0]![0].blocks.filter((block) => block.kind === "text")).toEqual(
+        [],
+      );
+    });
+
+    it("does not confuse an identifier with the silence token across chunks", async () => {
+      const { finalizeRun } = await runTurn(
+        "",
+        true,
+        "NO_RESPONSE_POLICY is configured.",
+        [],
+        "fyi",
+        {
+          trigger,
+          splitText: true,
+        },
+      );
+      expect(finalizeRun.mock.calls[0]![0].blocks.filter((block) => block.kind === "text")).toEqual(
+        [{ kind: "text", text: "NO_RESPONSE_POLICY is configured." }],
+      );
+    });
+  },
+);
+
+it("redacts restored narration", async () => {
+  const { finalizeRun } = await runTurn(
+    "",
+    true,
+    "The fake-secret-value is configured.",
+    ["fake-secret-value"],
+    "fyi",
+    { trigger: "routine" },
+  );
+  expect(finalizeRun.mock.calls[0]![0].blocks.filter((block) => block.kind === "text")).toEqual([
+    { kind: "text", text: "The [redacted] is configured." },
+  ]);
+});
+
+it("does not restore narration already published as durable progress", async () => {
+  const { finalizeRun } = await runTurn("", true, "The draft is posted.", [], "fyi", {
+    trigger: "reaction",
+    priorProgressText: "The draft is posted.",
+  });
+  expect(finalizeRun.mock.calls[0]![0].blocks.filter((block) => block.kind === "text")).toEqual([]);
+});
+
+it("keeps background ticket runs silent", async () => {
+  const { finalizeRun } = await runTurn("", true, undefined, [], "fyi", { trigger: "tickets" });
+  expect(finalizeRun.mock.calls[0]![0].blocks).toEqual([]);
+});
+
+describe("held-back narration on peer requests", () => {
+  it.each(["request", "question"] as const)(
+    "saves the last non-empty narration as the final result for an empty %s reply",
+    async (intent) => {
+      vi.mocked(returnBotMessageOutcome).mockClear();
+      const { finalizeRun, append } = await runTurn(
+        "",
+        true,
+        ["I will check that.", "  The draft is posted.  ", "   "],
+        [],
+        intent,
+      );
+      expect(finalizeRun).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ outcome: "completed" }),
+      );
+      expect(finalizeRun.mock.calls[0]![0].blocks.filter((block) => block.kind === "text")).toEqual(
+        [{ kind: "text", text: "The draft is posted." }],
+      );
+      expect(append.mock.calls.map(([event]) => event.type)).not.toContain(
+        "thread.message.created",
+      );
       expect(returnBotMessageOutcome).toHaveBeenCalledExactlyOnceWith(
         expect.anything(),
         expect.anything(),
         expect.anything(),
-        finalText,
+        "The draft is posted.",
         "result",
       );
-    } else {
-      expect(returnBotMessageOutcome).not.toHaveBeenCalled();
-    }
-  });
+
+      // A worker stopping after finalizeRun leaves only these saved blocks for retry.
+      vi.mocked(returnBotMessageOutcome).mockClear();
+      const terminalRun = {
+        id: "run-1",
+        status: "completed",
+        botId: "bot-1",
+        bot: { name: "Assistant" },
+      };
+      const reconciler = createJobReconciler({
+        prisma: {
+          run: {
+            findMany: vi.fn(async ({ where }: { where: { trigger?: string } }) =>
+              where.trigger === "bot_message" ? [terminalRun] : [],
+            ),
+            updateMany: vi.fn(async () => ({ count: 1 })),
+          },
+          routine: { findMany: vi.fn(async () => []) },
+          computer: { findMany: vi.fn(async () => []) },
+          messagingOutbound: { findFirst: vi.fn(async () => null) },
+          message: {
+            findMany: vi.fn(async () => [
+              { blocks: finalizeRun.mock.calls[0]![0].blocks, clientNonce: null },
+            ]),
+          },
+        },
+        jobs: { enqueue: vi.fn() },
+        events: {},
+      } as unknown as Parameters<typeof createJobReconciler>[0]);
+      await reconciler.reconcileOnce();
+      expect(returnBotMessageOutcome).toHaveBeenCalledExactlyOnceWith(
+        expect.anything(),
+        terminalRun,
+        { id: "bot-1", name: "Assistant" },
+        "The draft is posted.",
+        "result",
+        { forceUnread: false },
+      );
+    },
+  );
 });
 
 describe("withheld narration on short reply-producing turns", () => {
@@ -187,6 +399,155 @@ describe("withheld narration on short reply-producing turns", () => {
     const text = finalizeRun.mock.calls[0]![0].blocks.filter((block) => block.kind === "text")
       .map((block) => block.text)
       .join("");
-    expect(text).toBe(`I will check that.${finalText}`);
+    expect(text).toBe(`I will check that.${finalText ? `\n\n${finalText}` : ""}`);
+  });
+});
+
+describe("text from separate assistant turns", () => {
+  it.each(["The draft is posted.", "The draft is posted at https://example.com/drafts/42"])(
+    "keeps a paragraph break after %j in finalized blocks",
+    async (narration) => {
+      const { finalizeRun } = await runTurn("Nothing has changed since then.", false, narration);
+      const text = finalizeRun.mock.calls[0]![0].blocks.filter((block) => block.kind === "text")
+        .map((block) => block.text)
+        .join("");
+      expect(text).toBe(`${narration}\n\nNothing has changed since then.`);
+    },
+  );
+
+  it("streams the break when the redactor holds all pre-tool text", async () => {
+    const narration = "I will check that.";
+    const finalText = "Checked: all clear.";
+    const { append } = await runTurn(finalText, false, narration, [
+      "fake-secret-longer-than-the-entire-reply-for-redactor-buffering",
+    ]);
+    const text = append.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.type === "thread.progress")
+      .map((event) => {
+        const payload = event.payload as { text?: string; delta?: string };
+        return payload.text ?? payload.delta ?? "";
+      })
+      .join("");
+    expect(text).toBe(`${narration}\n\n${finalText}`);
+  });
+});
+
+describe("text from assistant messages with no tool call between them", () => {
+  it("keeps a paragraph break and leaves each message's deltas as streamed", async () => {
+    const { finalizeRun, append } = await runTurn("", false, undefined, [], "fyi", {
+      runtimeEvents: [
+        { type: "text", text: "Do" },
+        { type: "text", text: "ne." },
+        { type: "turn" },
+        { type: "text", text: "That" },
+        { type: "text", text: "'s it." },
+        { type: "done", text: "Done.That's it." },
+      ],
+    });
+    const saved = finalizeRun.mock.calls[0]![0].blocks.filter((block) => block.kind === "text")
+      .map((block) => block.text)
+      .join("");
+    const streamed = append.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.type === "thread.progress")
+      .map((event) => {
+        const payload = event.payload as { text?: string; delta?: string };
+        return payload.text ?? payload.delta ?? "";
+      })
+      .join("");
+    expect(saved).toBe("Done.\n\nThat's it.");
+    expect(streamed).toBe("Done.\n\nThat's it.");
+  });
+
+  it("adds nothing when the next message already starts on a new line", async () => {
+    const { finalizeRun } = await runTurn("", false, undefined, [], "fyi", {
+      runtimeEvents: [
+        { type: "text", text: "Done." },
+        { type: "turn" },
+        { type: "text", text: "\nThat's it." },
+        { type: "done", text: "Done.\nThat's it." },
+      ],
+    });
+    const saved = finalizeRun.mock.calls[0]![0].blocks.filter((block) => block.kind === "text")
+      .map((block) => block.text)
+      .join("");
+    expect(saved).toBe("Done.\nThat's it.");
+  });
+});
+
+describe("a stray NO_RESPONSE on runs that must reply", () => {
+  const savedText = (finalizeRun: Awaited<ReturnType<typeof runTurn>>["finalizeRun"]) =>
+    finalizeRun.mock.calls[0]![0].blocks.filter((block) => block.kind === "text")
+      .map((block) => block.text)
+      .join("");
+
+  it("drops the sentinel a late follow-up message adds after a user run's final answer", async () => {
+    const { finalizeRun } = await runTurn("", false, undefined, [], "fyi", {
+      runtimeEvents: [
+        { type: "text", text: "Saved the PDF: /tmp/report.pdf" },
+        { type: "turn" },
+        { type: "text", text: "NO_" },
+        { type: "text", text: "RESPONSE" },
+        { type: "done", text: "Saved the PDF: /tmp/report.pdfNO_RESPONSE" },
+      ],
+    });
+    expect(savedText(finalizeRun)).toBe("Saved the PDF: /tmp/report.pdf");
+    expect(finalizeRun).toHaveBeenCalledWith(expect.objectContaining({ markUnread: true }));
+  });
+
+  it("drops repeated sentinels glued onto a user run's final answer", async () => {
+    const { finalizeRun } = await runTurn("", false, undefined, [], "fyi", {
+      runtimeEvents: [
+        { type: "text", text: "The report is ready." },
+        { type: "text", text: "NO_RESPONSENO_RESPONSENO_RESPONSE" },
+        { type: "done", text: "The report is ready.NO_RESPONSENO_RESPONSENO_RESPONSE" },
+      ],
+    });
+    expect(savedText(finalizeRun)).toBe("The report is ready.");
+  });
+
+  it("returns a peer request's result without the sentinel", async () => {
+    vi.mocked(returnBotMessageOutcome).mockClear();
+    const { finalizeRun } = await runTurn("", true, undefined, [], "request", {
+      trigger: "bot_message",
+      runtimeEvents: [
+        { type: "text", text: "Done." },
+        { type: "turn" },
+        { type: "text", text: "NO_RESPONSE" },
+        { type: "done", text: "Done.NO_RESPONSE" },
+      ],
+    });
+    expect(savedText(finalizeRun)).toBe("Done.");
+    expect(returnBotMessageOutcome).toHaveBeenCalledExactlyOnceWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      "Done.",
+      "result",
+    );
+  });
+
+  it.each(["Set the reply token to NO_RESPONSE and restart.", "NO_RESPONSE_POLICY is configured."])(
+    "keeps the sentinel when it is part of the reply: %s",
+    async (reply) => {
+      const { finalizeRun } = await runTurn("", false, undefined, [], "fyi", {
+        runtimeEvents: [
+          { type: "text", text: reply },
+          { type: "done", text: reply },
+        ],
+      });
+      expect(savedText(finalizeRun)).toBe(reply);
+    },
+  );
+
+  it("leaves a sentinel-only user reply as it is today", async () => {
+    const { finalizeRun } = await runTurn("", false, undefined, [], "fyi", {
+      runtimeEvents: [
+        { type: "text", text: "NO_RESPONSE" },
+        { type: "done", text: "NO_RESPONSE" },
+      ],
+    });
+    expect(savedText(finalizeRun)).toBe("NO_RESPONSE");
   });
 });

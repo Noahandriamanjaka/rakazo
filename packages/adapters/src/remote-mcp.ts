@@ -3,6 +3,8 @@ import type { LookupFunction } from "node:net";
 import { isIP } from "node:net";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { RequestOptions } from "@modelcontextprotocol/sdk/shared/protocol.js";
+import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { ConnectorTool } from "@rakazo/adapter-kit";
 import { isCloudMetadataHost, isLocalMcpHost, isPrivateNetworkHost } from "@rakazo/contracts";
 import { Agent } from "undici";
@@ -52,46 +54,50 @@ const resolveHostname: ResolveHostname = (hostname) =>
   lookup(hostname, { all: true, verbatim: true });
 
 export async function listRemoteMcpTools(options: RemoteMcpOptions): Promise<ConnectorTool[]> {
-  return withRemoteMcpClient(options, async (client, signal) => {
-    const tools: ConnectorTool[] = [];
-    let cursor: string | undefined;
-    for (let page = 0; page < MAX_MCP_PAGES && tools.length < MAX_MCP_TOOLS; page += 1) {
-      const result = await client.listTools(cursor ? { cursor } : undefined, {
-        signal,
-        timeout: MCP_TIMEOUT_MS,
-      });
-      for (const tool of result.tools) {
-        if (tools.length >= MAX_MCP_TOOLS) break;
-        tools.push({
-          name: tool.name,
-          description: tool.description ?? tool.title ?? tool.name,
-          inputSchema: tool.inputSchema,
-          readOnly: tool.annotations?.readOnlyHint,
-        });
-      }
-      cursor = result.nextCursor;
-      if (!cursor) break;
-    }
-    return tools;
-  });
+  return withRemoteMcpClient(options, async (client, signal) =>
+    (await listMcpTools(client, { signal, timeout: MCP_TIMEOUT_MS })).map((tool) => ({
+      name: tool.name,
+      description: tool.description ?? tool.title ?? tool.name,
+      inputSchema: tool.inputSchema,
+      readOnly: tool.annotations?.readOnlyHint,
+    })),
+  );
 }
 
+/** Follow `tools/list` cursors, bounded by the shared page and tool caps. */
+export async function listMcpTools(client: Client, options: RequestOptions): Promise<Tool[]> {
+  const tools: Tool[] = [];
+  let cursor: string | undefined;
+  for (let page = 0; page < MAX_MCP_PAGES && tools.length < MAX_MCP_TOOLS; page += 1) {
+    const result = await client.listTools(cursor ? { cursor } : undefined, options);
+    tools.push(...result.tools.slice(0, MAX_MCP_TOOLS - tools.length));
+    cursor = result.nextCursor;
+    if (!cursor) break;
+  }
+  return tools;
+}
+
+/** Call through the guarded transport, optionally projecting before the final byte limit. */
 export async function callRemoteMcpTool(
   options: RemoteMcpOptions,
   toolName: string,
   args: Record<string, unknown>,
+  projectResult?: (result: unknown) => unknown,
 ): Promise<unknown> {
   return withRemoteMcpClient(options, async (client, signal) => {
     const result = await client.callTool({ name: toolName, arguments: args }, undefined, {
       signal,
       timeout: MCP_TIMEOUT_MS,
     });
-    return limitRemoteMcpPayload({
+    const envelope = {
       content: result.content,
       structuredContent: result.structuredContent,
       isError: result.isError ?? false,
       _meta: result._meta,
-    });
+    };
+    // Providers may extract a bounded domain result before duplicate MCP text
+    // and structured content consume the budget. The final limit still applies.
+    return limitRemoteMcpPayload(projectResult ? projectResult(envelope) : envelope);
   });
 }
 

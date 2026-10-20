@@ -56,7 +56,7 @@ export function ChoiceCard({
 
   return (
     <div className="flex justify-start">
-      <div className="relative w-[420px] max-w-full rounded-[20px] border border-border bg-card px-[18px] py-[14px]">
+      <div className="relative w-[420px] max-w-full rounded-[20px] bg-card px-[18px] py-[14px]">
         {!block.answerId ? (
           <Button
             variant="ghost"
@@ -84,9 +84,9 @@ export function ChoiceCard({
                 type="button"
                 disabled={Boolean(block.answerId) || pending}
                 onClick={() => void choose(option.id)}
-                className={`flex w-full items-start gap-3 rounded-xl px-3.5 py-3.5 text-start text-foreground disabled:opacity-60 ${block.answerId ? "bg-accent" : "bg-muted hover:bg-accent"}`}
+                className={`flex w-full items-center gap-3 rounded-xl px-3.5 py-3.5 text-start text-foreground disabled:opacity-60 ${block.answerId ? "bg-accent" : "bg-muted hover:bg-accent"}`}
               >
-                <span className="mt-0.5 grid h-[24px] w-[24px] shrink-0 place-items-center rounded-[7px] bg-background text-[12.5px] font-medium text-foreground/75">
+                <span className="grid h-[24px] w-[24px] shrink-0 place-items-center rounded-[7px] bg-background text-[12.5px] leading-none font-medium text-foreground/75">
                   {option.letter}
                 </span>
                 <span
@@ -99,7 +99,7 @@ export function ChoiceCard({
                   />
                 </span>
                 {block.answerId === option.id ? (
-                  <span className="mt-0.5 text-foreground/75">✓</span>
+                  <span className="text-foreground/75">✓</span>
                 ) : null}
               </button>
             ))}
@@ -402,7 +402,7 @@ export function McpApprovalCard({
 
   const summary = endpoint ?? `stdio · ${transport}`;
   return (
-    <BuiCard data-testid="mcp-approval-card" className="max-w-[74%] p-4">
+    <BuiCard data-testid="mcp-approval-card" className="w-full min-w-0 max-w-xl p-4">
       <div className="flex items-center gap-2">
         <span className="grid h-7 w-7 place-items-center rounded-lg bg-muted text-xs text-foreground">
           M
@@ -420,7 +420,7 @@ export function McpApprovalCard({
               : t`Approve this server to let your agent use its tools.`}
           </p>
           {error ? <p className="mt-2 text-xs text-destructive">{error}</p> : null}
-          <div className="mt-3 flex gap-2">
+          <div className="mt-3 flex flex-wrap gap-2">
             <Button
               className="rounded-full"
               disabled={state !== "pending" || busy}

@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { Api, Context, Message, Model } from "@earendil-works/pi-ai";
 import type { AdapterContext, AgentRunRequest, AgentUsage } from "@rakazo/adapter-kit";
 import { DEFAULT_CONTEXT_STRATEGY } from "@rakazo/adapter-kit";
+import { getLogger } from "@rakazo/logging";
 import type { CacheRequest, ContextBudget } from "./context-selection.js";
 import {
   ContextCacheTracker,
@@ -10,6 +11,7 @@ import {
   selectContext,
   shortenToolResultText,
 } from "./context-selection.js";
+import { effectiveOutputReserve, resolveCompletionMaxTokens } from "./pi-runtime-limits.js";
 
 const accountSalt = randomBytes(32);
 const sharedCacheTracker = new ContextCacheTracker();
@@ -18,8 +20,8 @@ interface ProjectionEntry {
   catalogIds?: string[];
 }
 const projections = new Map<string, ProjectionEntry[]>();
-/** A skill read is the source text the agent rewrites with skill_update; never shorten it. */
-export const VERBATIM_TOOL_RESULTS: ReadonlySet<string> = new Set(["skill_read"]);
+/** Keep editable source and fleet instruction versions intact; these tools bound their own output. */
+export const VERBATIM_TOOL_RESULTS: ReadonlySet<string> = new Set(["skill_read", "list_fleet"]);
 // History reads are exact evidence and keep their own offset-aware shortening elsewhere.
 const UNSHORTENED_TOOL_RESULTS = new Set([
   "read_history",
@@ -97,6 +99,7 @@ export function createRuntimeContextPolicy(
   let pendingProjection: { scope: string; entries: ProjectionEntry[] } | undefined;
   let decision: RuntimeContextDecision | undefined;
   let metadataPresent = false;
+  let warnedOutputClamp = false;
   const historyById = new Map(
     request.history.filter((message) => message.id).map((message) => [message.id!, message]),
   );
@@ -156,13 +159,42 @@ export function createRuntimeContextPolicy(
   }
   return {
     prepareContext(ctx: Context, model: Model<Api>): Context {
-      const strategy = request.contextStrategy ?? DEFAULT_CONTEXT_STRATEGY;
+      const contextWindow = request.model.contextWindow ?? model.contextWindow;
+      const configuredMaxTokens = resolveCompletionMaxTokens(
+        model.maxTokens,
+        request.model.maxTokens,
+        undefined,
+        model.reasoning,
+      );
+      const outputReserve = effectiveOutputReserve(contextWindow, configuredMaxTokens);
+      if (outputReserve < configuredMaxTokens && !warnedOutputClamp) {
+        warnedOutputClamp = true;
+        getLogger().warn("Model output limit clamped to preserve context room", {
+          configuredMaxTokens: request.model.maxTokens ?? configuredMaxTokens,
+          effectiveMaxTokens: outputReserve,
+          contextWindow,
+        });
+      }
       const standaloneHistoryFallback =
         request.contextStrategy === undefined &&
         (!request.executeTool ||
           !["read_history", "search_history"].every((name) =>
             request.tools.some((tool) => tool.name === name),
           ));
+      // An explicitly declared cache window opts this connection into prefix reuse.
+      // Without history retrieval, preserve fitting originals instead of replacing
+      // them with cold snapshots the caller cannot follow back to the source.
+      // Unknown/disabled caches retain the default; explicit overrides still win.
+      const retention = request.model.cacheCapabilities?.retentionMs;
+      const strategy =
+        request.contextStrategy ??
+        (!standaloneHistoryFallback &&
+        request.model.cacheCapabilities?.retentionMode !== "none" &&
+        typeof retention === "number" &&
+        Number.isFinite(retention) &&
+        retention > 0
+          ? "cache-aware"
+          : DEFAULT_CONTEXT_STRATEGY);
       metadataPresent = ctx.messages.some((message) =>
         Boolean((message as Message & OriginalMetadata).rakazoHistory),
       );
@@ -225,18 +257,21 @@ export function createRuntimeContextPolicy(
       if (currentIndex < 0)
         currentIndex = messages.findLastIndex((message) => message.role === "user");
       if (currentIndex < 0) currentIndex = 0;
+      // Steering, follow-ups and finished shells arrive as user messages during the
+      // run. Give each its own exchange so it does not push older history out:
+      // a moved first message rewrites the provider's whole cached prefix.
+      const laterUserMessages = messages
+        .slice(currentIndex + 1)
+        .filter((message) => message.role === "user").length;
       let protectedIndexes = messages.flatMap((message, index) =>
         message.role === "system" || (index >= currentIndex && message.role === "user")
           ? [index]
           : [],
       );
-      const modelWindow = request.model.contextWindow ?? model.contextWindow;
-      const outputReserve = request.model.maxTokens ?? model.maxTokens;
       const fixed =
         estimateContextTokens(ctx.systemPrompt ?? "") + estimateContextTokens(ctx.tools ?? []);
       // Recent history and navigation have their own bounds. Active tool progress
       // uses the actual model budget rather than an artificial smaller window.
-      const contextWindow = modelWindow;
       let navigationMessage = projected?.navigation;
       let catalogIds = projected?.catalogIds ?? [];
       const budget = {
@@ -358,7 +393,13 @@ export function createRuntimeContextPolicy(
           return message;
         const source = text(message);
         if (source.length <= 1024) return message;
-        const shortened = shortenToolResultText(source, 1024, { name: message.toolName });
+        // The model read this result on an earlier step, so mark it as shortened after use.
+        const shortened = shortenToolResultText(
+          source,
+          1024,
+          { name: message.toolName },
+          { afterUse: true },
+        );
         if (shortened.length >= source.length) return message;
         return {
           ...message,
@@ -373,7 +414,8 @@ export function createRuntimeContextPolicy(
         strategy,
         protectedIndexes,
         cacheWarmth: predictedCache,
-        recentExchanges: retainShortHistory || standaloneHistoryFallback ? messages.length : 8,
+        recentExchanges:
+          retainShortHistory || standaloneHistoryFallback ? messages.length : 8 + laterUserMessages,
       });
       const shortenedStructuredResults = selected.messages.filter((message) => {
         if (message.role !== "toolResult") return false;

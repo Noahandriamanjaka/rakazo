@@ -1,5 +1,7 @@
 import { Trans, useLingui } from "@lingui/react/macro";
+import { ORPCError } from "@orpc/client";
 import type { AgentSkill, AgentSkillCatalogEntry, MemoryDocument } from "@rakazo/contracts";
+import { isDeletableMemoryDocument } from "@rakazo/contracts";
 import {
   Badge,
   Button,
@@ -12,7 +14,7 @@ import {
 } from "@rakazo/ui-web";
 import { useEffect, useRef, useState } from "react";
 import { downloadArtifactBytes } from "../lib/artifact-open";
-import { rpc } from "../lib/rpc";
+import { useSpaceRpc } from "../lib/space-rpc";
 
 const fieldClass = "mt-2 w-full font-mono text-[13px] leading-relaxed";
 
@@ -31,6 +33,7 @@ export function KnowledgeSection({
   botId: string;
   onSkillsChange: (skills: AgentSkillCatalogEntry[]) => void;
 }) {
+  const rpc = useSpaceRpc();
   const { t } = useLingui();
   return (
     <section className="mt-6" data-testid="bot-knowledge">
@@ -61,6 +64,7 @@ export function KnowledgeSection({
 
 /** The space's shared memory documents, mounted in the Memory settings overlay. */
 export function SpaceMemorySection() {
+  const rpc = useSpaceRpc();
   return (
     <div className="mt-6" data-testid="space-memory-documents">
       <div className="mb-2 text-[12.5px] uppercase tracking-[0.08em] text-muted-foreground">
@@ -84,13 +88,17 @@ function MemoryDocumentList({
   exportFilename: string;
   testId: string;
 }) {
+  const rpc = useSpaceRpc();
   const { t } = useLingui();
   const [loading, setLoading] = useState(true);
   const [docs, setDocs] = useState<MemoryDocument[]>([]);
   const [openId, setOpenId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  const [loadedRevision, setLoadedRevision] = useState<number | undefined>();
+  const [conflicted, setConflicted] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const generation = useRef(0);
   const loadRef = useRef(load);
   loadRef.current = load;
@@ -116,21 +124,62 @@ function MemoryDocumentList({
   }, [t]);
 
   function openDoc(doc: MemoryDocument) {
+    setLoadedRevision(doc.revision);
+    setConflicted(false);
     setOpenId(doc.id);
     setDraft(doc.content);
     setError(null);
+    setConfirmingDelete(false);
   }
 
-  async function save(doc: MemoryDocument) {
+  function closeDoc() {
+    setOpenId(null);
+    setConflicted(false);
+    setConfirmingDelete(false);
+  }
+
+  async function remove(doc: MemoryDocument) {
     if (busy) return;
+    if (!confirmingDelete) {
+      setConfirmingDelete(true);
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
-      const updated = await rpc.memory.update({ documentId: doc.id, content: draft });
-      setDocs((current) => current.map((entry) => (entry.id === updated.id ? updated : entry)));
-      setOpenId(null);
+      await rpc.memory.remove({ documentId: doc.id });
+      setDocs((current) => current.filter((entry) => entry.id !== doc.id));
+      closeDoc();
     } catch {
-      setError(t`Could not save`);
+      setError(t`Could not remove`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function save(doc: MemoryDocument) {
+    if (busy || conflicted) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const updated = await rpc.memory.update({
+        documentId: doc.id,
+        content: draft,
+        expectedRevision: loadedRevision,
+      });
+      setDocs((current) => current.map((entry) => (entry.id === updated.id ? updated : entry)));
+      closeDoc();
+    } catch (err) {
+      if (err instanceof ORPCError && err.code === "CONFLICT") {
+        setConflicted(true);
+        try {
+          setDocs(await loadRef.current());
+        } catch {
+          // Keep the draft and conflict state even if refreshing fails.
+        }
+      } else {
+        setError(t`Could not save`);
+      }
     } finally {
       setBusy(false);
     }
@@ -158,6 +207,11 @@ function MemoryDocumentList({
   return (
     <div data-testid={testId}>
       {error ? <div className="px-2.5 pb-2 text-[13px] text-destructive">{error}</div> : null}
+      {conflicted ? (
+        <div className="px-2.5 pb-2 text-[13px] text-destructive">
+          <Trans>Document changed. Reopen to edit the latest version.</Trans>
+        </div>
+      ) : null}
       {loading ? <Skeleton className="h-10 w-full" /> : null}
       {!loading && docs.length === 0 && !error ? (
         <div className="px-2.5 py-1 text-[13.5px] text-muted-foreground">
@@ -170,7 +224,7 @@ function MemoryDocumentList({
             variant="ghost"
             type="button"
             disabled={busy}
-            onClick={() => (openId === doc.id ? setOpenId(null) : openDoc(doc))}
+            onClick={() => (openId === doc.id ? closeDoc() : openDoc(doc))}
             className={rowClass(openId === doc.id)}
           >
             <span className="flex w-full items-baseline justify-between gap-3">
@@ -197,7 +251,7 @@ function MemoryDocumentList({
                 <Button
                   variant="ghost"
                   type="button"
-                  disabled={busy || draft === doc.content}
+                  disabled={busy || conflicted || draft === doc.content}
                   onClick={() => void save(doc)}
                   className="rounded-lg bg-muted px-3 py-1.5 text-[13px] text-foreground disabled:opacity-50"
                 >
@@ -207,11 +261,22 @@ function MemoryDocumentList({
                   variant="ghost"
                   type="button"
                   disabled={busy}
-                  onClick={() => setOpenId(null)}
+                  onClick={closeDoc}
                   className="rounded-lg px-3 py-1.5 text-[13px] text-muted-foreground"
                 >
                   <Trans>Cancel</Trans>
                 </Button>
+                {isDeletableMemoryDocument(doc.path) ? (
+                  <Button
+                    variant="ghost"
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void remove(doc)}
+                    className="ml-auto rounded-lg px-3 py-1.5 text-[13px] text-destructive"
+                  >
+                    {confirmingDelete ? <Trans>Confirm delete</Trans> : <Trans>Delete</Trans>}
+                  </Button>
+                ) : null}
               </div>
             </div>
           ) : null}
@@ -257,6 +322,7 @@ function AgentSkills({
 }: {
   onSkillsChange: (skills: AgentSkillCatalogEntry[]) => void;
 }) {
+  const rpc = useSpaceRpc();
   const { t } = useLingui();
   const [loading, setLoading] = useState(true);
   const [skills, setSkills] = useState<AgentSkillCatalogEntry[]>([]);
