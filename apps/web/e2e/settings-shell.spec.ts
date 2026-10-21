@@ -58,6 +58,24 @@ test("settings shell is two-pane and deep-links Models Memory Voice Usage", asyn
   await expect(settings.getByText("Stream replies", { exact: true })).toBeVisible();
   await streamReplies.scrollIntoViewIfNeeded();
   await captureScreenshot(page, testInfo, "settings-shell-general");
+  const scroller = settings.getByTestId("settings-scroll");
+  await scroller.evaluate((node) => {
+    node.scrollTop = Math.max(0, (node.scrollHeight - node.clientHeight) / 2);
+  });
+  await expect.poll(() => scroller.evaluate((node) => node.scrollTop)).toBeGreaterThan(0);
+  // Scrolled content clips at a visible divider with space under the subtitle.
+  const headerEdge = await settings.getByTestId("settings-header").evaluate((node) => {
+    const style = getComputedStyle(node);
+    return {
+      border: Number.parseFloat(style.borderBottomWidth),
+      borderStyle: style.borderBottomStyle,
+      padding: Number.parseFloat(style.paddingBottom),
+    };
+  });
+  expect(headerEdge.border).toBeGreaterThanOrEqual(1);
+  expect(headerEdge.borderStyle).toBe("solid");
+  expect(headerEdge.padding).toBeGreaterThanOrEqual(16);
+  await captureScreenshot(page, testInfo, "settings-shell-scrolled");
   await streamReplies.click();
   await expect(streamReplies).toBeChecked();
   await expect
@@ -112,9 +130,53 @@ test("Honcho memory settings empty and filled", async ({ page }, testInfo) => {
   await expect(memory.getByLabel("API key", { exact: true })).toBeVisible();
   await expect(memory.getByLabel("Workspace", { exact: true })).toBeVisible();
   await expect(memory.getByRole("button", { name: "Connect", exact: true })).toBeDisabled();
+  await page.setViewportSize({ width: 1280, height: 900 });
   await captureScreenshot(page, testInfo, "memory-honcho-empty");
   await memory.getByLabel("API key", { exact: true }).fill("hch-test-key");
   await memory.getByLabel("Workspace", { exact: true }).fill("team-notes");
   await expect(memory.getByRole("button", { name: "Connect", exact: true })).toBeEnabled();
   await captureScreenshot(page, testInfo, "memory-honcho-filled");
+  await memory.getByRole("button", { name: "Local", exact: true }).click();
+  await expect(memory.getByLabel("Base URL", { exact: true })).toHaveValue("http://localhost:8000");
+  await memory
+    .getByLabel("Base URL", { exact: true })
+    .fill("http://honcho-api.railway.internal:8000");
+  await expect(memory.getByRole("button", { name: "Connect", exact: true })).toBeEnabled();
+  await memory.getByLabel("Base URL", { exact: true }).fill("");
+  await expect(memory.getByRole("button", { name: "Connect", exact: true })).toBeDisabled();
+  await memory
+    .getByLabel("Base URL", { exact: true })
+    .fill("http://honcho-api.railway.internal:8000");
+  await captureScreenshot(page, testInfo, "memory-honcho-local");
+  const documents = memory.getByTestId("space-memory-documents");
+  await documents.scrollIntoViewIfNeeded();
+  await expect(documents).toBeVisible();
+  await captureScreenshot(page, testInfo, "memory-honcho-local-bottom");
+
+  const scrollToTop = () =>
+    memory.locator(".rk-scroll").evaluate((element) => {
+      element.scrollTop = 0;
+    });
+  await memory.getByLabel("Provider").selectOption("supermemory");
+  await scrollToTop();
+  await expect(memory.getByLabel("Organization API key", { exact: true })).toBeVisible();
+  await captureScreenshot(page, testInfo, "memory-supermemory-cloud");
+  await memory.getByRole("button", { name: "Local", exact: true }).click();
+  await expect(memory.getByLabel("Base URL", { exact: true })).toHaveValue("http://localhost:6767");
+  await expect(memory.getByLabel("Instance API key", { exact: true })).toBeVisible();
+  await captureScreenshot(page, testInfo, "memory-supermemory-local");
+
+  await page.emulateMedia({ colorScheme: "dark" });
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await memory.getByLabel("Provider").selectOption("honcho");
+  await scrollToTop();
+  await expect(memory.getByRole("button", { name: "Cloud", exact: true })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(memory.getByLabel("API key", { exact: true })).toBeVisible();
+  await captureScreenshot(page, testInfo, "memory-honcho-cloud-dark");
+  await documents.scrollIntoViewIfNeeded();
+  await expect(documents).toBeVisible();
+  await captureScreenshot(page, testInfo, "memory-dark-bottom");
 });

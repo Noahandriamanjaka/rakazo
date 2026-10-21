@@ -485,7 +485,7 @@ export const CreateRoutineInput = z
     name: z.string().min(1).max(80),
     prompt: z.string().min(1),
     crons: z.array(z.string().min(1)).default([]),
-    timezone: z.string().default("UTC"),
+    timezone: TimeZoneSchema.default("UTC"),
     notify: z.boolean().default(true),
     active: z.boolean().default(false),
     webhookEnabled: z.boolean().default(false),
@@ -711,7 +711,7 @@ export type ConnectionCatalogItem = z.infer<typeof ConnectionCatalogItemSchema>;
 export const ActionApprovalRuleSchema = z.object({
   id: Id,
   effect: z.enum(["always_allow", "require_approval"]),
-  matchKind: z.enum(["tool", "connector", "category"]),
+  matchKind: z.enum(["tool", "connector", "category", "site"]),
   matchValue: z.string(),
   createdAt: z.string(),
 });
@@ -971,6 +971,7 @@ export type MessagingAgentConnection = z.infer<typeof MessagingAgentConnectionSc
 
 export const RunSchema = z.object({
   id: Id,
+  userId: Id.optional(),
   botId: Id,
   threadId: Id,
   taskId: Id,

@@ -38,9 +38,8 @@ Optional: set `OPENROUTER_API_KEY` or connect a model in the UI after signup.
 A provider that authenticates from the host needs no key: for Amazon Bedrock with an ECS task,
 IRSA or EC2 instance role, opt in with `PI_DEFAULT_CREDENTIALS=host` and set
 `PI_DEFAULT_PROVIDER=amazon-bedrock`, `PI_DEFAULT_MODEL` and `AWS_REGION`. With an instance
-role, also complete both steps in [Restricted computer egress](#restricted-computer-egress):
-`SANDBOX_COMPUTER_EGRESS=restricted` alone does not stop bot computers reading the role's
-credentials from the metadata endpoint.
+role, keep [restricted computer egress](#restricted-computer-egress) on so bot computers
+cannot read the role's credentials from the metadata endpoint.
 Auto Review uses that LLM checker by default. To use TypeSafe Jev instead, set
 `RAKAZO_AUTO_REVIEW_PROVIDER=jev` and `TYPESAFE_API_KEY`. Core still runs with neither.
 
@@ -89,37 +88,42 @@ supervisor at startup naming the variable, rather than surfacing later as a fail
 
 ### Restricted computer egress
 
-Docker computers have full outbound access by default — the public internet plus the Docker
-host's own addresses, the LAN, and link-local cloud metadata endpoints such as
-`169.254.169.254`. On a cloud VM that last path is instance-credential theft for anything a
-bot runs. Restricted mode keeps public internet egress (browsing, DNS, apt, git over SSH)
-while dropping computer traffic to every non-public destination and to the host itself.
+Docker computers default to restricted egress: the public internet (browsing, DNS, apt, git
+over SSH) but not the Docker host, the LAN, or link-local cloud metadata such as
+`169.254.169.254`, which on a cloud VM would hand instance credentials to anything a bot runs.
 
-It takes two parts, both opt-in:
+It takes two parts:
 
-1. Set `SANDBOX_COMPUTER_EGRESS=restricted` in `.env` and recreate the supervisor. Each
-   computer network then gets a deterministic host bridge name (`rakazo-c…`) instead of a
-   generic `br-*`.
-2. Apply the host ruleset once per Docker host:
+1. `SANDBOX_COMPUTER_EGRESS=restricted`, the Compose default, gives each computer network a
+   deterministic host bridge name (`rakazo-c…`) instead of a generic `br-*`.
+2. The host ruleset, applied once per Docker host:
 
    ```bash
    sudo bash infra/compose/restrict-computer-egress.sh
    ```
 
-   On a no-checkout install, download it first:
-   `curl -fsSLO https://raw.githubusercontent.com/elie222/rakazo/main/infra/compose/restrict-computer-egress.sh`.
-   The script drops forwarded traffic from `rakazo-c*` bridges to all non-public IPv4/IPv6
+   `install-images.sh` downloads and runs it (asking for sudo) and records the result in
+   `.env`. Where the rules cannot be installed (macOS, Windows, Docker Desktop, rootless
+   Docker, no iptables, or a failed run) it writes `SANDBOX_COMPUTER_EGRESS=open` and says
+   why. The script drops forwarded traffic from `rakazo-c*` bridges to all non-public IPv4/IPv6
    destinations via the `DOCKER-USER` chain, adds an `INPUT` drop so computers cannot open
    connections to the host (established replies to host-initiated control and screen
    connections still flow), and installs a systemd oneshot so the rules return after a
    reboot. `--print` shows the exact rules without changing anything; `--remove` uninstalls.
+
+Before the first restricted computer starts, the supervisor checks that the host drops
+connections from a `rakazo-c*` bridge. Without the ruleset, computers fail to start with an
+error naming the script instead of running unrestricted; run the script (no restart needed)
+or set `SANDBOX_COMPUTER_EGRESS=open` and recreate the supervisor. A host-run supervisor
+(`pnpm dev`) and the desktop app's **This computer** stack default to open: Docker Desktop
+keeps its bridges in a VM the host rules cannot reach.
 
 Screen streaming is unaffected: the supervisor and web proxy join each computer's bridge,
 and the ruleset exempts traffic whose in- and out-interface are both `rakazo-c*` before
 any drop (that exemption is load-bearing on hosts where `br_netfilter` feeds bridged
 frames through `FORWARD`). Rules match interface names rather than subnets, so computer
 create/delete cycles need no firewall maintenance; deleting a computer removes its
-traffic from the match and nothing else. A computer provisioned before the flag flips
+traffic from the match and nothing else. A computer provisioned while egress was open
 is replaced on its next provision — resuming it on an unnamed bridge would bypass the
 restriction.
 
@@ -131,20 +135,20 @@ public resolvers (comma-separated IP addresses, such as `1.1.1.1,1.0.0.1`) and r
 supervisor: Docker then forwards computers' lookups there, and each computer picks the
 servers up on its next provision.
 
-To disable restricted egress, set `SANDBOX_COMPUTER_EGRESS=open`, recreate the
-supervisor, and run `sudo bash infra/compose/restrict-computer-egress.sh --remove`.
-The flag alone does not uninstall the host rules, which keep matching the still-named
-`rakazo-c*` bridges until removed.
+If computers must reach LAN services, an internal proxy, or endpoints bound to the host,
+set `SANDBOX_COMPUTER_EGRESS=open`, recreate the supervisor, and run
+`sudo bash infra/compose/restrict-computer-egress.sh --remove`. The flag alone does not
+uninstall the host rules, which keep matching the still-named `rakazo-c*` bridges until
+removed.
 
-Do not enable restricted egress if computers must reach LAN services, an internal proxy,
-or endpoints bound to the host. Requires Linux Docker Engine with the iptables backend —
-Docker Desktop, rootless Docker, and `firewall-backend: nftables` are unsupported. The
+The ruleset requires Linux Docker Engine with the iptables backend; Docker Desktop, rootless
+Docker, and `firewall-backend: nftables` are unsupported. The
 `SANDBOX_SCREEN_NETWORK=internal` topology shares one network instead of per-bot bridges,
 so the mode does not apply there.
 
 ## Docker Compose (single machine)
 
-1. Copy `.env.example` to `.env` and set `POSTGRES_PASSWORD` (`openssl rand -hex 16`), plus `BETTER_AUTH_SECRET`, `ENCRYPTION_KEY`, and `SCREEN_PROXY_SECRET` to independent long random strings (32+ characters; 64 hex for `ENCRYPTION_KEY`). Docker sandboxes also need a dedicated `SANDBOX_SUPERVISOR_TOKEN`. Keep existing `ENCRYPTION_KEY` values so stored credentials stay decryptable.
+1. Copy `.env.example` to `.env` and set `POSTGRES_PASSWORD` and `POSTGRES_APP_PASSWORD` (`openssl rand -hex 16` each), plus `BETTER_AUTH_SECRET`, `ENCRYPTION_KEY`, and `SCREEN_PROXY_SECRET` to independent long random strings (32+ characters; 64 hex for `ENCRYPTION_KEY`). Docker sandboxes also need a dedicated `SANDBOX_SUPERVISOR_TOKEN`. Keep existing `ENCRYPTION_KEY` values so stored credentials stay decryptable.
 2. Set `OPENROUTER_API_KEY` (and `COMPOSIO_API_KEY` if you want Plugins).
 3. Build the computer image: `pnpm sandbox:build` (Compose also builds it via the `computer` service).
 4. `docker compose --env-file .env -f infra/compose/docker-compose.yml up --build`
@@ -166,6 +170,36 @@ add `infra/compose/docker-compose.postgres-host.yml` so Postgres is published on
 `127.0.0.1:5433`, or use
 `docker compose --env-file .env -f infra/compose/docker-compose.yml exec postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'`.
 Do not publish Postgres on a public interface.
+
+### Database roles
+
+Rakazo uses two Postgres logins:
+
+- The owner (`POSTGRES_USER`, or `DATABASE_MIGRATION_URL` outside Compose) runs migrations and
+  owns the tables.
+- The app login (`rakazo_app` with `POSTGRES_APP_PASSWORD`, or `DATABASE_URL`) is not a
+  superuser, cannot bypass row-level security, cannot create objects, and can only read and write
+  the app tables.
+
+`pnpm db:migrate`, which the API's start command runs, applies the migrations and the job queue
+schema as the owner. It then creates the app login named in `DATABASE_URL`, or updates its
+password, and grants it the `rakazo_app` role. When migrations run as a role without
+`CREATEROLE`, as on some managed Postgres, create the login yourself and
+`GRANT rakazo_app TO <login>`.
+
+Messages, events, threads, memory, artifacts, secrets, model and voice credentials, and skills have
+row-level security. Each signed-in request sees only its Space's rows, plus the user's own
+account-level credentials. A query that leaves out its Space filter returns nothing from other
+Spaces. Background jobs, reconcilers and webhooks run in a named system scope (`runAsSystem` in
+`packages/db`). The job queue's tables (`graphile_worker`) hold job metadata, not Space content:
+graphile-worker turns on row-level security for them, and `pnpm db:migrate` adds a policy that
+gives the app login every row.
+
+With only `DATABASE_URL` set, migrations and the app share one login. Everything keeps working,
+but `pnpm db:migrate`, the API and the worker warn that row-level security is not enforced. To fix
+this, set `DATABASE_MIGRATION_URL` to the owner and `DATABASE_URL` to a new login.
+
+Run `pg_dump` as the owner. The app login would only dump rows it is allowed to see.
 
 The Docker supervisor is not published as its own image and is not exposed on the host. It runs from
 the app image, stays on the internal Compose network, and holds the Docker socket because access to
@@ -189,9 +223,18 @@ when the API starts for the first time and is not reapplied on restart. A non-em
 Leave it empty to keep that stored list.
 
 With a nonempty signup allowlist and SMTP configured, users—including existing accounts—must
-verify their email to sign in. On a fresh instance with no SMTP, the first allowlisted account
-can register without verification. That signup does not prove mailbox ownership, so create the
-account before exposing the service. Further accounts still need SMTP.
+verify their email to sign in. Without an allowlist, verification never blocks: a password signup
+signs in at once and is sent a verification link that only marks the address verified.
+
+SMTP also enables sign-in with a six-digit emailed code, which expires after ten minutes and allows
+three attempts. A code can create an account, so it follows the same registration and allowlist
+rules as password signup. Signing in with a code to an existing unverified account removes that
+account's password, SSO links and sessions, since nothing proved they belonged to the mailbox
+owner. This is what stops someone who registered another person's address from keeping access.
+
+On a fresh instance with no SMTP, the first allowlisted account can register without verification.
+That signup does not prove mailbox ownership, so create the account before exposing the service.
+Further accounts still need SMTP.
 
 For a public deployment, configure SMTP and an allowlist before the API's first start.
 Keep an installation without email on a trusted local network.
@@ -278,6 +321,20 @@ email configured, **Send deletion code** sends a single-use code to the account 
 minutes. Enter it in account settings to confirm deletion. Email-code requests are rate-limited;
 invalid, expired or wrong-account codes fail. No password needs to be created for deletion.
 
+### Mobile push notifications
+
+The API and worker send iOS and Android notifications through Expo's push service. If the Expo
+project has [enhanced security for push notifications](https://docs.expo.dev/push-notifications/sending-notifications/#additional-security)
+enabled, every send needs an access token; without one Expo rejects all pushes. Create an access
+token in the Expo account that owns the project and set it for both services:
+
+```env
+EXPO_ACCESS_TOKEN=replace-with-your-expo-access-token
+```
+
+Leave it unset when enhanced security is off. A missing or revoked token fails the push with an
+error that names `EXPO_ACCESS_TOKEN`; the token itself is never logged.
+
 ### Verification and password recovery email
 
 Password changes for signed-in users require no email configuration. Forgotten-password recovery
@@ -307,6 +364,19 @@ The emulator is forcibly disabled when `NODE_ENV=production` and requires the AP
 loopback host. In `NODE_ENV=development`, captured messages are available from
 `http://127.0.0.1:3100/api/dev/emails` with cache disabled; the API logs only delivery
 metadata, never reset tokens. The inbox route is not registered in test, staging, or production.
+
+### Password policy
+
+New passwords (signup, reset and change) must be 8 to 128 characters, with no composition rules.
+Optionally reject new passwords that appear in known breaches:
+
+```env
+AUTH_BREACHED_PASSWORD_CHECK_ENABLED=true
+```
+
+This queries the Have I Been Pwned range API, sending only the first five characters of the
+password's SHA-1 hash. It is off by default so the server makes no outside request. If the service
+is unreachable or takes longer than three seconds, the password is accepted and the failure logged.
 
 ### Billing
 
@@ -374,6 +444,52 @@ Services set `service.name` (`rakazo-api`, `rakazo-worker`, `rakazo-sandbox-supe
 `rakazo-updater`). A partial Axiom config logs a one-time warning and stays off. `AXIOM_EDGE` is a
 regional hostname; `AXIOM_EDGE_URL` must be https and wins when both are set.
 
+Computer usage is recorded at several boundaries:
+
+- `run.computer`: one record per execution attempt, including runs that never request a computer
+  (`reason=none`). `reason` is `tool`, `takeover`, or `script` otherwise; `tool` is an allowlisted
+  built-in name and `trigger` identifies user, routine, or other run sources. Deduplicate `run.id`
+  when counting runs, because a run can have several attempts.
+- `computer.requested`: the first computer use in an attempt, with its reason, tool, and trigger.
+- `computer.provisioned`: completed setup, with `operation=create`, `resume`, or `reuse` and
+  `durationMs`. A setup request can reuse an already-running computer without spending a start.
+- `sandbox.start`: Boat's actual `create`, `resume`, and `recover` requests, including starts during
+  preparation or after the provider expires a computer. `outcome=accepted` means the provider
+  accepted the request, not that all later setup succeeded. `rate_limited` and `failed` are
+  separate outcomes. Count accepted creates/resumes for start usage; recoveries are shown separately
+  because their quota treatment depends on the provider.
+- `computer.suspended`: successful idle or active-limit suspension, with the active duration.
+
+These records use fixed metadata, opaque correlation IDs, durations, and booleans. They do not add
+prompts, responses, filenames, file contents, command arguments, or credentials. Request/job trace
+fields link non-run starts back to the API route or background job that initiated them. Axiom is
+an additional sink for the same logs; these events need no extra keys when ingest is configured.
+
+For example, substitute your own dataset in these APL queries:
+
+```apl
+['YOUR_DATASET']
+| where message == 'sandbox.start'
+| summarize requests=count() by provider, operation, outcome
+```
+
+```apl
+['YOUR_DATASET']
+| where message == 'computer.requested'
+| summarize requests=count() by trigger, reason, tool
+```
+
+```apl
+['YOUR_DATASET']
+| where message == 'run.computer'
+| summarize attempts=count(), withoutComputer=countif(reason == 'none') by trigger
+```
+
+Track accepted starts per hour/day, rate-limit refusals, first-use tools, and the proportion of
+attempts needing no computer before tuning `SANDBOX_IDLE_MS`. Increasing the idle window reduces
+resumes between nearby uses but increases billed runtime; changing it does not remove unnecessary
+starts caused by tools. Provider rolling-window limits remain the source of truth for quota.
+
 Error reporting to Sentry or a Sentry-compatible collector such as GlitchTip is optional:
 
 - `SENTRY_DSN` reports backend `error` logs, with the exception chain, `service`, and request or job
@@ -437,11 +553,146 @@ Each user can also connect their own OpenAI-compatible endpoint from **Connect a
 **Settings → Models** on web and mobile. Choose **OpenAI-compatible**, enter the server base URL
 (for example `http://127.0.0.1:8000/v1`), the exact model id, and an optional API key.
 Public hosts and ordinary hostnames need `RAKAZO_OPENAI_COMPAT_ALLOW_PUBLIC=1` and HTTPS.
-Literal private IP, loopback, and `host.docker.internal` targets do not. If that endpoint's model
+Literal private IP, loopback, and `host.docker.internal` targets do not, but only the deployment
+owner can use them, checked on save, on model discovery, and on every run. Set
+`MCP_ALLOW_PRIVATE_ENDPOINT=true` on the API and worker to allow them for every user.
+For a self-hosted endpoint whose hostname resolves to private IPs, set
+`RAKAZO_OPENAI_COMPAT_PRIVATE_HOSTS=models.example.test,other.example.test` in the deployment
+environment for both API and worker, then recreate those containers. Entries are exact hostnames
+(case-insensitive, optional trailing dot), not URLs, suffixes, or wildcards. These hosts do not
+need `RAKAZO_OPENAI_COMPAT_ALLOW_PUBLIC`; every DNS answer must be private, and metadata and
+link-local destinations remain blocked. This applies to discovery and model requests.
+HTTPS still validates the hostname's certificate. Like private IP endpoints, trusted hostnames
+also permit HTTP with API keys; use HTTPS unless the network is trusted. Only allow hosts you
+control: like other private endpoints, allowlisted hosts are limited to the deployment owner
+unless `MCP_ALLOW_PRIVATE_ENDPOINT=true`.
+If that endpoint's model
 accepts images, enable **Supports images** under **Advanced** when connecting so attachments and
 screenshot computer tools stay available. Existing connections default to disabled. For centrally
 managed endpoints, the deployment-wide fallback remains
 `RAKAZO_OPENAI_COMPATIBLE_VISION_MODELS=gpt4o-vision,llava`.
+
+### Client addresses
+
+Sessions, logs, and security events carry the caller's address. The API believes a forwarded
+header only when the TCP peer is in `TRUSTED_PROXIES` (IPs, CIDR ranges, or hostnames such as a
+Compose service name). It reads that header (`CLIENT_IP_HEADER`, default `x-forwarded-for`) right
+to left past trusted hops. Anyone else is the TCP peer, so a client cannot choose its own address.
+Compose sets `TRUSTED_PROXIES` to the hop in front of the API: `caddy` in production, `web`
+elsewhere. The web app's `/api` proxy appends the address it saw, so with only `web` trusted the
+API records the address of whatever connects to the web container, such as your host proxy. To
+record each client instead, also trust that proxy's address as the web container sees it, and make
+sure that proxy overwrites or appends `X-Forwarded-For`. For any other layout, list every proxy
+between the internet and the API.
+
+Caddy resolves the client first. `Caddyfile.prod` takes the TCP peer and overwrites
+`X-Forwarded-For` with it. Behind a CDN, Caddy has to trust the CDN's ranges and read its client
+header: `Caddyfile.cloudflare.example` does this with Cloudflare's ranges and `CF-Connecting-IP`.
+For another CDN, copy that file and change the ranges and the header. If you copied the Cloudflare
+example before this change, copy it again.
+
+### Content-Security-Policy
+
+The web server sends a strict Content-Security-Policy: scripts and connections are limited to the
+app's own origin. When a CDN in front of the app injects a script, such as an analytics beacon, the
+browser blocks it until you add its origins. `RAKAZO_CSP_SCRIPT_SRC` extends `script-src` and
+`RAKAZO_CSP_CONNECT_SRC` extends `connect-src`. Each takes space-separated `https://` origins, with
+an optional port and leading `*.` wildcard (`https://*.example.com`). Keywords such as
+`'unsafe-inline'`, bare schemes, `*`, `http://` origins and paths are rejected, and the web server
+refuses to start until the value is fixed. Restart the web service after changing either one.
+
+For example, Cloudflare Web Analytics loads its script from one host and reports to another:
+
+```bash
+RAKAZO_CSP_SCRIPT_SRC=https://static.cloudflareinsights.com
+RAKAZO_CSP_CONNECT_SRC=https://cloudflareinsights.com
+```
+
+Add only origins you trust: a script these settings allow runs with the signed-in user's access.
+
+### Security events
+
+The API and worker append a row to `security_events` and write a `security.event` log line for:
+
+- sign-up, sign-in, sign-out, and failed sign-in or sign-up
+- session revocation, password and passkey changes, and account deletion
+- model, MCP, connector, voice, memory, and secret credentials created, changed, or removed
+- deployment settings changes, approval decisions, and approval policy changes
+- refused private or internal destinations (`egress.refused`) and auth rate-limit hits
+
+Each event has the user, space, client address, user agent, time, and a few identifiers. Events
+never include message content, secrets, or tokens. Rows older than `SECURITY_EVENT_RETENTION_DAYS`
+(default 90) are deleted, and Postgres rejects updates to the rows that remain.
+
+The deployment owner can read recent events through the `security.events` RPC, filtered by `type`,
+`ip`, or `userId`, and paged with `cursor`. You can also query Postgres:
+
+```bash
+docker compose --env-file .env -f infra/compose/docker-compose.prod.yml exec postgres \
+  psql -U rakazo -d rakazo -c 'SELECT "createdAt", type, ip, "userId", "userAgent", metadata
+  FROM security_events ORDER BY "createdAt" DESC LIMIT 50'
+```
+
+Caddy writes a JSON access-log line for each request to stdout. The lines exclude
+`Authorization`, `Cookie`, and `Set-Cookie`, and URL tokens are replaced with `REDACTED`. Docker
+rotates container logs and drops them when it recreates a container. To keep Caddy's lines, ship
+container stdout to your log sink with a collector. Security events reach the sink through the
+API's own log shipping, and Postgres keeps them too.
+
+### What to alert on
+
+The queries below are pseudo-SQL over the JSON log lines, so translate them to your log sink. Field
+names are the literal keys in each line: `message`, `security.event.type`, `client.ip`,
+`user_agent.original`, `user.id`, and the `security.event.metadata` object. Tune the thresholds to
+your traffic.
+
+Sign-up bursts from one address:
+
+```sql
+SELECT "client.ip", count(*) FROM logs
+WHERE message = 'security.event' AND "security.event.type" = 'auth.sign_up'
+GROUP BY "client.ip", bucket(1 hour) HAVING count(*) > 3
+```
+
+Password guessing, from one address and across many:
+
+```sql
+SELECT "client.ip", count(*) FROM logs
+WHERE "security.event.type" IN ('auth.sign_in.failed', 'rate_limit.hit')
+GROUP BY "client.ip", bucket(15 minutes) HAVING count(*) > 10;
+
+SELECT count(DISTINCT "client.ip") FROM logs
+WHERE "security.event.type" = 'auth.sign_in.failed'
+GROUP BY bucket(15 minutes) HAVING count(*) > 50
+```
+
+Probes of internal addresses. Any hit deserves a look:
+
+```sql
+SELECT "user.id", "security.event.metadata.host", "security.event.metadata.reason", count(*)
+FROM logs WHERE "security.event.type" = 'egress.refused'
+GROUP BY 1, 2, 3
+```
+
+Scripted clients on account routes:
+
+```sql
+SELECT "client.ip", "user_agent.original", count(*) FROM logs
+WHERE "security.event.type" LIKE 'auth.%'
+  AND ("user_agent.original" IS NULL
+    OR lower("user_agent.original") SIMILAR TO '%(curl|wget|python|go-http-client|headless|okhttp|java/)%')
+GROUP BY 1, 2
+```
+
+Credential and settings changes from an address that user has not signed in from:
+
+```sql
+SELECT * FROM logs c
+WHERE (c."security.event.type" LIKE 'credential.%'
+    OR c."security.event.type" = 'deployment.settings.changed')
+  AND NOT EXISTS (SELECT 1 FROM logs s WHERE s."security.event.type" = 'auth.sign_in'
+    AND s."user.id" = c."user.id" AND s."client.ip" = c."client.ip")
+```
 
 ### Prompt cache capabilities
 
@@ -486,6 +737,21 @@ servers. Anonymous access is rate limited per IP address; set `KEENABLE_API_KEY`
 worker to send a key and lift those limits. Errors, per-bot disabled tools and the way back to
 the default work as described for Parallel.
 
+### Self-hosted memory
+
+Supermemory and Honcho can run on your own network. In **Settings → Memory**, choose **Local**
+and enter the instance's base URL. Only the deployment owner can save a local endpoint. It must
+be loopback or resolve to private addresses (a Compose service name, an RFC1918 or unique-local
+address, or a `.internal` name such as Railway's private network); Rakazo pins the resolved
+address for every request. Space members use the saved connection without seeing its key.
+
+For [Honcho](https://github.com/plastic-labs/honcho), enable `AUTH_USE_AUTH` on the Honcho
+server and use an admin JWT from its `scripts/generate_jwt.py --admin` as the key, so each Space
+gets its own workspace. A workspace-scoped JWT works when you enter that workspace. Honcho needs
+its own PostgreSQL with pgvector, an LLM provider, and an embedding provider; set
+`EMBEDDING_VECTOR_DIMENSIONS` before its first start. Rakazo stores only explicitly saved facts
+in Honcho; conversation summaries stay in Rakazo.
+
 Remote MCP servers and installed API / GraphQL connectors default to public HTTPS. The deployment
 owner can attach one on localhost, the same LAN, or a Docker network. Set
 `MCP_ALLOW_PRIVATE_ENDPOINT=true` on the API and worker to allow these for every user. Cloud
@@ -506,9 +772,11 @@ Do not commit `.env`. Never put `COMPOSIO_API_KEY`, OpenRouter keys, or provider
 
 Optional messaging platforms (iMessage, Slack, WhatsApp, Telegram, Feishu/Lark) mount when their env credentials are set — see `.env.example`. Point a Feishu/Lark bot event subscription at `/api/v1/messaging/webhook/lark` (webhook/HTTP inbound only; do not enable long connection). Groups stay iMessage-only. Telegram can run several bots side by side (`TELEGRAM_BOT_TOKEN_<NAME>` plus `TELEGRAM_WEBHOOK_SECRET_TOKEN_<NAME>`), for example one per space, so the same person can chat with a different Rakazo bot through each.
 
+The Compose files pass the API and worker only the settings each one reads, listed by name, rather than the whole `.env`. A setting whose name you choose, such as `TELEGRAM_BOT_TOKEN_<NAME>`, therefore needs its own line: add it under `api` and `worker` `environment` in an override file layered after the base file (and in `RAKAZO_COMPOSE_FILE` when the updater is enabled), with no value so Compose fills it from `.env`.
+
 ## Choosing a computer provider
 
-The Electron desktop app is a client of the same API. Docker remains the default. For an app-managed local instance, the deployment owner can choose **Use this Mac** (macOS) or **Use this computer** (Windows/Linux). After native confirmation, an authenticated bridge sends commands from the Docker backend to Electron, where they run under your OS account. **Computer Access…** in the app menu changes the choice; **Revoke Local Computer Access** immediately disconnects active operations and revokes the saved permission. Local execution requires the desktop app to remain running. Connecting to an existing remote instance does not grant it access to your computer. Browser and mobile clients use the deployment’s configured computer; they do not expose their own host. `SANDBOX_PROVIDER=desktop` remains a separate configuration for backends running directly on the intended host.
+The Electron desktop app is a client of the same API. Docker remains the default. For an app-managed local instance, the deployment owner can choose **Use this Mac** (macOS) or **Use this computer** (Windows/Linux). After native confirmation, an authenticated bridge sends commands from the Docker backend to Electron, where they run under your OS account. **Computer Access…** in the app menu changes the choice; **Revoke Local Computer Access** immediately disconnects active operations and revokes the saved permission. Local execution requires the desktop app to remain running. Connecting to an existing remote instance does not grant it access to your computer. Browser and mobile clients use the deployment’s configured computer; they do not expose their own host. `SANDBOX_PROVIDER=desktop` is a separate, development-only configuration for backends running directly on the intended host.
 
 Native file reads and workspace exports are limited to 8 MiB per file. A larger workspace file fails the checkpoint and preserves the previous saved workspace; local files remain on the computer. Writes are bounded by the 12 MiB encoded request limit.
 
@@ -539,7 +807,9 @@ Native file reads and workspace exports are limited to 8 MiB per file. A larger 
   screen control is unavailable. Permission is remembered locally and can be revoked from the
   app menu. Only enable this for a trusted personal instance: every bot on that instance can use
   your account’s permissions.
-- **Desktop provider** (`SANDBOX_PROVIDER=desktop`) runs commands directly on the API/worker host.
+- **Desktop provider** (`SANDBOX_PROVIDER=desktop`) runs commands directly on the API/worker host,
+  with only a minimal shell environment (no server secrets). The API and worker refuse it unless
+  `NODE_ENV` is `development` or `test`, so a production server never runs bot commands on itself.
   Setting this inside a container does not grant access to the physical computer. Docker deployments
   use the authenticated native bridge when local computer access is selected; they never silently
   fall back to executing on the backend host.
@@ -642,9 +912,9 @@ docker compose --env-file .env -f infra/compose/docker-compose.prod.yml exec api
 ```
 
 Passing `GIT_SHA` is what makes `/internal/health` report a `"revision"`; a locally built image has no
-other way to know its commit. Prebuilt images from the registry bake it in at publish time, so when
-you switch to a release tag you should leave `GIT_SHA` unset — a value in `.env` would override what
-the image already knows.
+other way to know its commit. Prebuilt images from the registry bake it in at publish time, so
+switching to a release tag needs nothing more: the containers report the revision the image was built
+from, not a `GIT_SHA` in `.env`.
 
 Once a release has been published you can switch this host to prebuilt images by setting
 `RAKAZO_IMAGE_TAG` to that release tag and running `pull` followed by `up -d --wait --pull never`.
@@ -668,8 +938,85 @@ then checks capacity by scaling only the previous appdata archive by appdata sou
 plus the previous database dump size. Snapshots without source-size
 metadata use the raw source size for their initial estimate. It preserves the newest
 verified snapshot when capacity is insufficient, caps output file sizes, and removes a failed run's
-partial snapshot. These local snapshots are not a substitute for an encrypted off-host backup or
-provider snapshot.
+partial snapshot. Local snapshots alone do not survive losing the host; encrypt them and copy them
+off-site as described below.
+
+#### Encrypted and off-site backups
+
+Backups are encrypted with [age](https://age-encryption.org) to public recipients only, so the host
+can write backups it cannot read. Generate the key pair on a machine you control, not on the server,
+and keep the identity file (the private key) offline, ideally with a second recipient held by
+another operator:
+
+```bash
+age-keygen -o rakazo-backup.key   # prints "Public key: age1..."
+```
+
+`harden-host.sh` installs `age`; on other hosts run `apt-get install age`. Then set the public keys in
+`/etc/rakazo/backup.env`, separated by spaces, or point at a recipients file with one key per line:
+
+```env
+RAKAZO_BACKUP_AGE_RECIPIENTS=age1exampleprimaryrecipient age1examplerecoveryrecipient
+# or: RAKAZO_BACKUP_AGE_RECIPIENTS_FILE=/etc/rakazo/backup-recipients.txt
+```
+
+With recipients set, each snapshot holds `rakazo.dump.age`, `appdata.tgz.age`, `SOURCE_SIZE_KB`,
+and `SHA256SUMS`. `pg_dump` and `tar` stream straight into age, so plaintext never touches disk.
+Verification needs no private key: `pg_restore --list` and `tar -t` read the same plaintext stream
+while it is encrypted, each file must carry an age header, and the checksums cover the encrypted
+files.
+
+Without recipients the backup stays plaintext as before, logs a warning, and the host check alerts
+that the latest backup is not encrypted. After the first encrypted backup, a run without recipients
+fails instead of quietly writing plaintext. Set `RAKAZO_BACKUP_ALLOW_PLAINTEXT=1` only to accept
+plaintext on purpose; it also silences the host-check alert.
+
+For an off-site copy, install `rclone` and set `RAKAZO_BACKUP_OFFSITE_REMOTE` to any
+[rclone remote](https://rclone.org/overview/) and path, such as an S3-compatible bucket or an SFTP
+server. Configure the remote with rclone's own settings in the same file, for example:
+
+```env
+RAKAZO_BACKUP_OFFSITE_REMOTE=offsite:rakazo-backups
+RAKAZO_BACKUP_OFFSITE_KEEP=14
+RCLONE_CONFIG_OFFSITE_TYPE=s3
+RCLONE_CONFIG_OFFSITE_PROVIDER=Other
+RCLONE_CONFIG_OFFSITE_ENDPOINT=https://s3.example.com
+RCLONE_CONFIG_OFFSITE_ACCESS_KEY_ID=replace-me
+RCLONE_CONFIG_OFFSITE_SECRET_ACCESS_KEY=replace-me
+```
+
+After each verified local snapshot, the encrypted files are uploaded to `<remote>/<stamp>/`,
+checked with `rclone check`, and only then given `SHA256SUMS`, which marks the copy complete. Off-site copies require encryption. The remote
+keeps the newest `RAKAZO_BACKUP_OFFSITE_KEEP` complete snapshots (default `14`), independent of
+`RAKAZO_BACKUP_KEEP`; only stamp-named directories are removed. Set it to `0` to leave deletion to
+the bucket's lifecycle rules, so the credentials need list, read and write but no delete permission. A failed upload keeps the
+local snapshot but fails the service, so the backup alert fires.
+
+#### Restoring an encrypted backup
+
+Run these where the identity file lives, never leaving it on the server. Fetch a snapshot with
+`rclone copy offsite:rakazo-backups/<stamp> ./<stamp>` or `scp`, then run the drill, which checks the
+checksums and decrypts each file into `pg_restore --list` and `tar -t` without writing plaintext
+(it needs `age`, `pg_restore` of the server's major version or newer, and `tar`):
+
+```bash
+bash infra/compose/backup-drill.sh ./<stamp> rakazo-backup.key
+```
+
+To restore, stop the application services, then stream each file to the server:
+
+```bash
+COMPOSE="sudo docker compose --env-file .env -f infra/compose/docker-compose.prod.yml"
+ssh deploy@app.example.com "cd /srv/rakazo && $COMPOSE stop api worker web"
+age -d -i rakazo-backup.key <stamp>/rakazo.dump.age | ssh deploy@app.example.com \
+  "cd /srv/rakazo && $COMPOSE exec -T postgres sh -c 'pg_restore --clean --if-exists --no-owner -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\"'"
+age -d -i rakazo-backup.key <stamp>/appdata.tgz.age | ssh deploy@app.example.com \
+  "sudo tar -xzf - --numeric-owner -C \"\$(sudo docker volume inspect -f '{{.Mountpoint}}' rakazo-prod_appdata)\""
+ssh deploy@app.example.com "cd /srv/rakazo && $COMPOSE up -d --wait --pull never"
+```
+
+Replace `rakazo-prod_appdata` with the volume the api container mounts at `/data` if the stack uses another
+project name. Plaintext snapshots restore the same way with `cat` in place of `age -d`.
 
 The scheduled backup uses `/srv/rakazo` by default. For another deployment directory, set
 `RAKAZO_DEPLOY_DIR=/absolute/path/to/checkout` in a root-owned `/etc/rakazo/backup.env`
@@ -712,7 +1059,11 @@ The guard does not protect arbitrary direct `ufw` commands or SSH daemon configu
 To deploy from CI, install `infra/compose/deploy-main.sh` as `/usr/local/sbin/rakazo-deploy-main`
 and give CI a key restricted to it in the deploy user's `authorized_keys`
 (`restrict,command="/usr/local/sbin/rakazo-deploy-main" ssh-ed25519 …`). It builds `origin/main`,
-restarts the stack, waits for `https://$RAKAZO_HOST/health`, and rolls back on failure. Build and
+starts each new API and web container beside the running one and stops the old one only once the
+new one is healthy, so a deploy does not take the site offline, then waits for
+`https://$RAKAZO_HOST/health` and rolls back on failure. Old and new API containers serve together
+for a few seconds after migrations run, so a migration must keep working with the previous
+release: add first, and drop or rename only in a later deploy. Build and
 start are time-limited so a stuck build fails the deploy instead of holding its lock; a deploy that
 finds the lock held exits non-zero. A deploy refuses to start with less than
 `RAKAZO_DEPLOY_MIN_FREE_GB` (default `5`) free, and after a healthy rollout it removes untagged
@@ -806,7 +1157,7 @@ GIT_SHA=$(git rev-parse HEAD) docker compose --env-file .env -f infra/compose/do
 ```
 
 `up --wait` does not report success until the new API is healthy and the worker and web containers
-are running. The API's start command runs `prisma migrate deploy` before it serves, so migration
+are running. The API's start command runs `pnpm db:migrate` before it serves, so migration
 failure keeps health red. A failed CLI recreate does not auto-roll back; recover with the previous
 `RAKAZO_IMAGE_TAG` (or rebuild `local`) and `up -d --wait --pull never`.
 
@@ -817,8 +1168,26 @@ Sidecar `/apply` and `/rollback` recover a failed recreate by redeploying the pr
 image when possible; if that also fails, they report a possible mixed-version runtime.
 
 Source checkouts (not Compose) still upgrade the old way: pull, rebuild with
-`GIT_SHA=$(git rev-parse HEAD)`, run `pnpm --filter @rakazo/db migrate`, then restart API and worker.
+`GIT_SHA=$(git rev-parse HEAD)`, run `pnpm db:migrate`, then restart API and worker.
 Product contracts stay compatible across cloud and self-hosted.
+
+### Upgrading to the separate app database login
+
+Releases with [database roles](#database-roles) need `POSTGRES_APP_PASSWORD` in `.env`. The
+desktop app, `install-images.sh` and `infra/compose/deploy-main.sh` add it when it is missing.
+Elsewhere, add it yourself (`openssl rand -hex 16`) before you pull, or Compose stops at config
+validation with `Set POSTGRES_APP_PASSWORD in .env`. On first start, the API creates the
+`rakazo_app` login, and the API and worker then connect as it. Nothing else changes, and the
+upgrade does not rewrite any data.
+
+If a feature misbehaves under row-level security, run `ALTER ROLE <login> BYPASSRLS;` on the login
+in `DATABASE_URL` (`rakazo_app` in Compose) as a superuser (the Compose owner is one), then
+restart the API and worker. Role attributes are not inherited, so granting it to `rakazo_app` does
+nothing for a separate login. The app then runs as before, with a startup warning, and later
+migrations leave that login alone. Undo it with
+`NOBYPASSRLS` and another restart, then search the API and worker logs for
+`violates row-level security` and `without a tenant or system context`. Rolling back to an older release works without changes: it
+ignores the extra variable and connects as the owner.
 
 ### Space privacy-boundary migration
 
@@ -1079,6 +1448,30 @@ native file flow on mobile. No new mobile player or settings screen is required.
 ## Connect mobile clients
 
 The iOS and Android app can also point at a self-hosted origin at runtime. On the sign-in screen, tap **Use a custom server** and enter the same HTTPS origin as `WEB_ORIGIN` (for example `https://app.example.com`). Store builds still default to `EXPO_PUBLIC_API_URL`; the in-app setting is an override for people running their own API. Changing the server signs the device out of any previous session.
+
+### Passkeys
+
+Passkeys are on whenever `WEB_ORIGIN` is an HTTPS domain (or `localhost` in development); the
+relying party is that origin's host, so existing passkeys keep working only while `WEB_ORIGIN`
+stays on the same domain. They are off when password sign-in is disabled for SSO-only
+deployments. On web, a browser offers them where it has a platform authenticator; the macOS
+desktop app does not, so it hides them.
+
+Native apps can use a domain's passkeys only when the domain vouches for them and the app was
+built for that domain (the app's associated domain comes from `EXPO_PUBLIC_API_URL` at build
+time). To let a build use this server's passkeys, set:
+
+```bash
+# iOS: <Apple Team ID>.<bundle id>, comma-separated. Served as /.well-known/apple-app-site-association.
+PASSKEY_APPLE_APP_IDS=ABCDE12345.com.rakazo.app
+# Android: SHA-256 fingerprints of the app signing certificates, comma-separated.
+# Served as /.well-known/assetlinks.json and accepted as passkey origins.
+PASSKEY_ANDROID_CERT_SHA256=AA:BB:...:FF
+```
+
+Until a platform's setting is set, the native app on that platform hides passkeys for this
+server. Both files are served through the web origin, so a reverse proxy in front of the web container
+must pass `/.well-known/` through to it.
 
 ## Upload size
 

@@ -1,5 +1,6 @@
 import type { LinkFavicons } from "@rakazo/chat-ui/native";
 import {
+  CodeCopyButtonContext,
   LinkFaviconsContext,
   MarkdownLinkPromptProvider,
   MermaidDiagramContext,
@@ -25,6 +26,7 @@ import Animated, { useAnimatedStyle, useSharedValue } from "react-native-reanima
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AvatarStyleProvider } from "../components/avatar-style";
 import { CallCard } from "../components/CallCard";
+import { CodeCopyButton } from "../components/code-copy-button";
 import { ComputerUpdateProgress } from "../components/computer-update-progress";
 import { floatingHeaderOptions, glassHeaderOptions } from "../components/glass-title";
 import { MermaidDiagram } from "../components/mermaid-diagram";
@@ -199,7 +201,9 @@ function ChatContentProviders({
       <RemoteImagesContext.Provider value={loadRemoteImages}>
         <LinkFaviconsContext.Provider value={linkFavicons}>
           <MermaidDiagramContext.Provider value={MermaidDiagram}>
-            {children}
+            <CodeCopyButtonContext.Provider value={CodeCopyButton}>
+              {children}
+            </CodeCopyButtonContext.Provider>
           </MermaidDiagramContext.Provider>
         </LinkFaviconsContext.Provider>
       </RemoteImagesContext.Provider>
@@ -399,6 +403,7 @@ export default function Layout() {
                         name="bot-settings"
                         options={glassHeaderOptions(t("Chat settings"))}
                       />
+                      <Stack.Screen name="bot-model" options={glassHeaderOptions(t("Model"))} />
                       <Stack.Screen
                         name="thread"
                         options={{ title: t("Thread"), animation: chatAnimation }}

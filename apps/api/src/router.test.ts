@@ -589,6 +589,94 @@ describe("thread answer delivery", () => {
   });
 });
 
+describe("secret request dismissal", () => {
+  function setup(answered: boolean) {
+    const answerRunInput = vi.fn().mockResolvedValue(answered);
+    const enqueue = vi.fn().mockResolvedValue(undefined);
+    const prisma = {
+      bot: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: "bot-1",
+          thread: { id: "thread-1" },
+          computer: null,
+        }),
+      },
+    } as unknown as PrismaClient;
+    const deps = {
+      prisma,
+      events: { answerRunInput },
+      jobs: { enqueue },
+      env: {
+        defaultProvider: "fake",
+        defaultModel: "fake-model",
+        webOrigin: "https://web.example.test",
+        screenProxySecret: "fake-test-secret",
+        sandboxProvider: "fake",
+      },
+      dataDir: "/tmp/rakazo-router-test",
+    } as unknown as RouterDeps;
+    const actor = {
+      spaceId: "workspace-1",
+      userId: "user-1",
+      email: "user@example.test",
+      isDeploymentOwner: true,
+    } satisfies Actor;
+    const handler = new RPCHandler(createRouter(deps));
+    const send = (json: Record<string, unknown>) =>
+      handler.handle(
+        new Request("https://api.example.test/rpc/threads/answer", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            json: { botId: "bot-1", runId: "run-1", messageId: "message-1", ...json },
+          }),
+        }),
+        { prefix: "/rpc", context: { actor } },
+      );
+    return { answerRunInput, enqueue, send };
+  }
+
+  it("passes a dismissal on as the signed-in user and wakes the run", async () => {
+    const h = setup(true);
+    const { response } = await h.send({ answer: "", dismiss: true });
+
+    expect(response.status).toBe(200);
+    expect(h.answerRunInput).toHaveBeenCalledWith({
+      spaceId: "workspace-1",
+      threadId: "thread-1",
+      runId: "run-1",
+      messageId: "message-1",
+      answeredByUserId: "user-1",
+      answer: "",
+      clientNonce: undefined,
+      username: undefined,
+      dismiss: true,
+    });
+    expect(h.enqueue).toHaveBeenCalledOnce();
+  });
+
+  it("reports a dismissal the card no longer accepts as a conflict", async () => {
+    const h = setup(false);
+    const { response } = await h.send({ answer: "", dismiss: true });
+
+    expect(response.status).toBe(409);
+    expect(h.enqueue).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a dismissal with a value", { answer: "example-password", dismiss: true }],
+    ["a dismissal with a username", { answer: "", username: "ada", dismiss: true }],
+    ["a dismissal during a call", { answer: "", clientNonce: "call:call-1:x", dismiss: true }],
+    ["an empty answer", { answer: "" }],
+  ])("rejects %s before it reaches the run", async (_name, json) => {
+    const h = setup(true);
+    const { response } = await h.send(json);
+
+    expect(response.status).toBe(400);
+    expect(h.answerRunInput).not.toHaveBeenCalled();
+  });
+});
+
 describe("thread stream authorization", () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -2069,7 +2157,14 @@ describe("OpenAI-compatible model probes", () => {
   const baseUrl = "https://127.0.0.1:8000/v1";
   const stored = JSON.stringify({ kind: "openai_compatible", baseUrl, apiKey: "fake-saved-key" });
 
-  function fixture(options: { credentialUserId?: string; secretUserId?: string } = {}) {
+  function fixture(
+    options: {
+      credentialUserId?: string;
+      secretUserId?: string;
+      actor?: Actor;
+      mcpAllowPrivateEndpoint?: boolean;
+    } = {},
+  ) {
     const credential = {
       id: "cred-1",
       userId: options.credentialUserId ?? actor.userId,
@@ -2105,8 +2200,8 @@ describe("OpenAI-compatible model probes", () => {
       Response.json({ data: [{ id: "test-model" }] }),
     );
     const probe = adapters.probeOpenAiCompatibleModels;
-    vi.spyOn(adapters, "probeOpenAiCompatibleModels").mockImplementation((input, _, signal) =>
-      probe(input, fetch, signal),
+    vi.spyOn(adapters, "probeOpenAiCompatibleModels").mockImplementation((input, _, signal, opts) =>
+      probe(input, fetch, signal, opts),
     );
     const deps = {
       prisma: {
@@ -2115,9 +2210,11 @@ describe("OpenAI-compatible model probes", () => {
         secret: { findMany: findSecret },
       },
       secrets: { load },
-      env: { sandboxProvider: "fake" },
+      env: { sandboxProvider: "fake", mcpAllowPrivateEndpoint: options.mcpAllowPrivateEndpoint },
     } as unknown as RouterDeps;
-    const client = createRouterClient(createRouter(deps), { context: { actor } as never });
+    const client = createRouterClient(createRouter(deps), {
+      context: { actor: options.actor ?? actor } as never,
+    });
     return { client, fetch, credentials, findCredential, findCredentials, findSecret, load };
   }
 
@@ -2256,6 +2353,25 @@ describe("OpenAI-compatible model probes", () => {
     },
   );
 
+  it("refuses a private endpoint probe from a user who is not the deployment owner", async () => {
+    const { client, fetch } = fixture({ actor: { ...actor, isDeploymentOwner: false } });
+    await expect(
+      client.models.probeOpenAiCompatible({ baseUrl, apiKey: "fake-typed-key" }),
+    ).rejects.toThrow(adapters.PRIVATE_MODEL_ENDPOINT_MESSAGE);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("probes a private endpoint for any user when the instance flag allows it", async () => {
+    const { client, fetch } = fixture({
+      actor: { ...actor, isDeploymentOwner: false },
+      mcpAllowPrivateEndpoint: true,
+    });
+    await expect(
+      client.models.probeOpenAiCompatible({ baseUrl, apiKey: "fake-typed-key" }),
+    ).resolves.toEqual({ models: ["test-model"] });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
   it("still rejects saved keys on public HTTP endpoints", async () => {
     vi.stubEnv("RAKAZO_OPENAI_COMPAT_ALLOW_PUBLIC", "1");
     try {
@@ -2331,17 +2447,65 @@ describe("model credential persistence", () => {
     return { upsert, finish, deps, handler: new RPCHandler(createRouter(deps)) };
   }
 
-  async function call(handler: RPCHandler<never>, path: string, body: unknown): Promise<Response> {
+  async function call(
+    handler: RPCHandler<never>,
+    path: string,
+    body: unknown,
+    as: Actor = actor,
+  ): Promise<Response> {
     const { response } = await handler.handle(
       new Request(`http://127.0.0.1/rpc/${path}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ json: body }),
       }),
-      { prefix: "/rpc", context: { actor } },
+      { prefix: "/rpc", context: { actor: as } },
     );
     return response;
   }
+
+  const privateConnect = {
+    provider: "openai-compatible",
+    baseUrl: "http://127.0.0.1:11434/v1",
+    modelId: "local-model",
+  };
+
+  it("refuses to save a private model endpoint for a user who is not the deployment owner", async () => {
+    const { deps, handler } = persistDeps();
+    const response = await call(handler, "models/connect", privateConnect, {
+      ...actor,
+      isDeploymentOwner: false,
+    });
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      json: { message: adapters.PRIVATE_MODEL_ENDPOINT_MESSAGE },
+    });
+    expect(deps.secrets.put).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { isDeploymentOwner: true, mcpAllowPrivateEndpoint: false },
+    { isDeploymentOwner: false, mcpAllowPrivateEndpoint: true },
+  ])("lets a private model endpoint through for %j", async (who) => {
+    const { deps, handler } = persistDeps();
+    Object.assign(deps.env, { mcpAllowPrivateEndpoint: who.mcpAllowPrivateEndpoint });
+    const build = vi.spyOn(adapters, "buildModelConnectPlaintext").mockImplementation(() => {
+      throw new Error("stop after validation");
+    });
+    try {
+      await call(handler, "models/connect", privateConnect, {
+        ...actor,
+        isDeploymentOwner: who.isDeploymentOwner,
+      });
+      expect(build).toHaveBeenCalledWith(
+        expect.objectContaining({ baseUrl: privateConnect.baseUrl }),
+        undefined,
+        expect.objectContaining({ allowPrivateEndpoint: true }),
+      );
+    } finally {
+      build.mockRestore();
+    }
+  });
 
   it("does not persist a stringified null model id from subscription sign-in", async () => {
     const { upsert, finish, handler } = persistDeps();

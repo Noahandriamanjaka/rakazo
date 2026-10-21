@@ -347,7 +347,7 @@ msgstr ""
 
 #. placeholder {0}: bot.name
 #. placeholder {0}: group.spaceName
-#. placeholder {0}: sectionMenu.section.name
+#. placeholder {0}: section.name
 #: src/pages/BotContextMenu.tsx
 #: src/pages/Shell.tsx
 msgid "Actions for {0}"
@@ -392,6 +392,10 @@ msgstr "Añade un archivo o carpeta para observar"
 #: src/components/ApprovalRulesSettings.tsx
 msgid "Add a model in Settings to use this."
 msgstr "Agrega un modelo en Configuración para usarlo."
+
+#: src/components/PasskeyOffer.tsx
+msgid "Add a passkey for faster sign-in?"
+msgstr "¿Añadir una llave de acceso para iniciar sesión más rápido?"
 
 #: src/pages/Shell.tsx
 msgid "Add a run time for this one-shot."
@@ -454,6 +458,11 @@ msgstr "Agregar servidor MCP"
 #: src/pages/PluginsOverlay.tsx
 msgid "Add OpenAPI"
 msgstr "Agregar OpenAPI"
+
+#: src/components/PasskeyOffer.tsx
+#: src/components/PasskeySettings.tsx
+msgid "Add passkey"
+msgstr "Añadir llave de acceso"
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Add remote MCP server"
@@ -573,6 +582,10 @@ msgstr "¿Ya tienes una cuenta?"
 #: src/pages/ExternalConversationSettings.tsx
 msgid "Always act"
 msgstr ""
+
+#: src/components/AskCard.tsx
+msgid "Always allow {site}"
+msgstr "Permitir siempre {site}"
 
 #: src/components/AskCard.tsx
 msgid "Always allow this tool"
@@ -782,6 +795,7 @@ msgstr "Estudio de avatares"
 msgid "Avatars"
 msgstr "Avatares"
 
+#: src/pages/Auth.tsx
 #: src/pages/Board.tsx
 #: src/pages/PluginsOverlay.tsx
 #: src/pages/RoutineEditor.tsx
@@ -804,7 +818,7 @@ msgstr "Orden de los modelos de respaldo"
 msgid "Backup models saved."
 msgstr "Modelos de respaldo guardados."
 
-#: src/pages/memory-providers/SupermemorySettingsForm.tsx
+#: src/pages/memory-providers/ConnectionModeFields.tsx
 msgid "Base URL"
 msgstr "URL base"
 
@@ -933,6 +947,7 @@ msgstr "No puede leer imágenes"
 #: src/components/ComputerMaintenanceActions.tsx
 #: src/components/ComputerUpdateProgress.tsx
 #: src/components/markdown-link-prompt.tsx
+#: src/components/PasskeySettings.tsx
 #: src/components/teach/TeachComputerOverlay.tsx
 #: src/pages/Artifacts.tsx
 #: src/pages/KnowledgeSection.tsx
@@ -1167,11 +1182,16 @@ msgstr "Cerrar configuración de usuario"
 msgid "Close voice settings"
 msgstr "Cerrar configuración de voz"
 
-#: src/pages/memory-providers/SupermemorySettingsForm.tsx
+#: src/pages/memory-providers/ConnectionModeFields.tsx
 msgid "Cloud"
 msgstr "Nube"
 
 #: src/components/AskCard.tsx
+msgid "Code"
+msgstr "Código"
+
+#: src/pages/Auth.tsx
+msgctxt "email sign-in"
 msgid "Code"
 msgstr "Código"
 
@@ -1351,6 +1371,10 @@ msgstr "Conectado: sus herramientas estarán disponibles desde tu próximo mensa
 msgid "Connecting…"
 msgstr "Conectando…"
 
+#: src/pages/memory-providers/ConnectionModeFields.tsx
+msgid "Connection"
+msgstr "Conexión"
+
 #: src/lib/model-connection-preflight.ts
 msgid "Connection test failed."
 msgstr "La prueba de conexión falló."
@@ -1366,6 +1390,7 @@ msgid "Context limit"
 msgstr "Límite de contexto"
 
 #: src/components/integrations/IntegrationSetup.tsx
+#: src/pages/Auth.tsx
 #: src/pages/Onboarding.tsx
 msgid "Continue"
 msgstr "Continuar"
@@ -1470,6 +1495,8 @@ msgid "Could not connect to the computer screen"
 msgstr "No se pudo conectar a la pantalla de la computadora"
 
 #: src/components/AccountAccess.tsx
+#: src/components/PasskeyOffer.tsx
+#: src/components/PasskeySettings.tsx
 #: src/lib/account-security.ts
 #: src/lib/sso-flow.ts
 #: src/lib/user-error.ts
@@ -1568,6 +1595,7 @@ msgid "Could not install connector"
 msgstr "No se pudo instalar el conector"
 
 #: src/components/ErrorBoundary.tsx
+#: src/components/PasskeySettings.tsx
 #: src/pages/KnowledgeSection.tsx
 msgid "Could not load"
 msgstr "No se pudo cargar"
@@ -1667,6 +1695,8 @@ msgstr "No se pudo reproducir un clip de prueba"
 msgid "Could not reach the model server."
 msgstr "No se pudo acceder al servidor del modelo."
 
+#: src/components/PasskeyOffer.tsx
+#: src/components/PasskeySettings.tsx
 #: src/lib/computer-sandbox.ts
 #: src/lib/user-error.ts
 #: src/pages/AccountSettingsOverlay.tsx
@@ -1987,6 +2017,7 @@ msgstr "Predeterminado ({0})"
 msgid "Default scope"
 msgstr "Alcance predeterminado"
 
+#: src/components/PasskeySettings.tsx
 #: src/pages/Artifacts.tsx
 #: src/pages/BotContextMenu.tsx
 #: src/pages/KnowledgeSection.tsx
@@ -1997,10 +2028,12 @@ msgstr "Alcance predeterminado"
 msgid "Delete"
 msgstr "Eliminar"
 
+#. placeholder {0}: passkeyLabel(deleting, t`Passkey`)
 #. placeholder {0}: pendingDelete.name
+#: src/components/PasskeySettings.tsx
 #: src/pages/Artifacts.tsx
 msgid "Delete \"{0}\"?"
-msgstr ""
+msgstr "¿Eliminar «{0}»?"
 
 #. placeholder {0}: artifact.name
 #. placeholder {0}: bot.name
@@ -2040,6 +2073,7 @@ msgstr ""
 msgid "deleted"
 msgstr "eliminado"
 
+#: src/components/PasskeySettings.tsx
 #: src/pages/Artifacts.tsx
 #: src/pages/shell/dialogs.tsx
 msgid "Deleting…"
@@ -2119,6 +2153,7 @@ msgstr "Desconectando…"
 
 #: src/components/AskCard.tsx
 #: src/components/ComputerUpdateProgress.tsx
+#: src/components/PasskeyOffer.tsx
 #: src/components/teach/TeachComputerOverlay.tsx
 #: src/pages/shell/message-cards.tsx
 msgid "Dismiss"
@@ -2704,6 +2739,10 @@ msgstr "Cantidad del intervalo"
 msgid "Interval unit"
 msgstr "Unidad del intervalo"
 
+#: src/lib/user-error.ts
+msgid "Invalid code"
+msgstr "Código no válido"
+
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/shell/bot-panel.tsx
 msgid "Isolated"
@@ -2864,7 +2903,7 @@ msgstr "Cargando proveedores de voz…"
 msgid "Loading…"
 msgstr "Cargando…"
 
-#: src/pages/memory-providers/SupermemorySettingsForm.tsx
+#: src/pages/memory-providers/ConnectionModeFields.tsx
 msgid "Local"
 msgstr "Local"
 
@@ -3304,6 +3343,7 @@ msgid "No matching artifacts on this page."
 msgstr ""
 
 #: src/pages/ModelSettingsOverlay.tsx
+#: src/pages/shell/chat-model-picker.tsx
 msgid "No matching models"
 msgstr "No hay modelos coincidentes"
 
@@ -3559,6 +3599,14 @@ msgstr "Incidente de PagerDuty"
 msgid "Park"
 msgstr "Aparcar"
 
+#: src/components/PasskeySettings.tsx
+msgid "Passkey"
+msgstr "Llave de acceso"
+
+#: src/components/PasskeySettings.tsx
+msgid "Passkeys"
+msgstr "Llaves de acceso"
+
 #: src/components/AskCard.tsx
 #: src/pages/AccountSettingsOverlay.tsx
 #: src/pages/Auth.tsx
@@ -3637,6 +3685,10 @@ msgstr "Elige una herramienta para comprobar"
 #: src/pages/BotContextMenu.tsx
 msgid "Pin"
 msgstr "Fijar"
+
+#: src/pages/Shell.tsx
+msgid "Pinned"
+msgstr "Fijados"
 
 #: src/components/ArtifactFileCard.tsx
 msgid "Play {name}"
@@ -3909,6 +3961,10 @@ msgstr "Eliminado, pero falló la actualización de la lista"
 msgid "Removing…"
 msgstr "Quitando…"
 
+#: src/components/PasskeySettings.tsx
+msgid "Rename"
+msgstr "Cambiar nombre"
+
 #: src/pages/BotContextMenu.tsx
 #: src/pages/Shell.tsx
 #: src/pages/shell/dialogs.tsx
@@ -3952,6 +4008,10 @@ msgstr ""
 #: src/pages/Shell.tsx
 msgid "Replying to {0}"
 msgstr ""
+
+#: src/lib/user-error.ts
+msgid "Request a new code"
+msgstr "Solicita un código nuevo"
 
 #: src/pages/shell/message-cards.tsx
 msgid "Research & writing"
@@ -4016,8 +4076,10 @@ msgid "Restoring your workspace"
 msgstr ""
 
 #: src/components/AccountAccess.tsx
+#: src/components/PasskeySettings.tsx
 #: src/pages/Auth.tsx
 #: src/pages/ModelBackupsSettings.tsx
+#: src/pages/PluginsOverlay.tsx
 #: src/pages/SettingsOverlay.tsx
 msgid "Retry"
 msgstr "Reintentar"
@@ -4112,6 +4174,7 @@ msgid "Runs when this bot receives a verified message from this provider."
 msgstr ""
 
 #: src/components/AskCard.tsx
+#: src/components/PasskeySettings.tsx
 #: src/components/teach/SkillDraftCard.tsx
 #: src/pages/Board.tsx
 #: src/pages/ExternalConversationSettings.tsx
@@ -4185,6 +4248,7 @@ msgstr "Di sí o no, o responde en una frase."
 #: src/pages/PluginsOverlay.tsx
 #: src/pages/Shell.tsx
 #: src/pages/shell/bot-picker.tsx
+#: src/pages/shell/chat-model-picker.tsx
 #: src/pages/shell/command-palette.tsx
 msgid "Search"
 msgstr "Buscar"
@@ -4211,6 +4275,7 @@ msgid "Search integrations.sh"
 msgstr ""
 
 #: src/pages/ModelSettingsOverlay.tsx
+#: src/pages/shell/chat-model-picker.tsx
 msgid "Search models"
 msgstr "Buscar modelos"
 
@@ -4397,10 +4462,11 @@ msgid "Sign in"
 msgstr "Iniciar sesión"
 
 #: src/components/AccountAccess.tsx
+#: src/lib/passkeys.ts
 #: src/lib/user-error.ts
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Sign in again"
-msgstr ""
+msgstr "Vuelve a iniciar sesión"
 
 #: src/pages/Auth.tsx
 msgid "Sign in to Rakazo"
@@ -4409,6 +4475,10 @@ msgstr "Inicia sesión en Rakazo"
 #: src/lib/user-error.ts
 msgid "Sign in to your existing account to link SSO"
 msgstr "Inicia sesión en tu cuenta existente para vincular SSO"
+
+#: src/components/PasskeySignIn.tsx
+msgid "Sign in with passkey"
+msgstr "Iniciar sesión con llave de acceso"
 
 #: src/lib/model-connection-preflight.ts
 msgid "Sign in with the subscription, or test the API key instead."
@@ -4702,9 +4772,10 @@ msgstr "Este bot se ejecuta en esta computadora, no en un escritorio Linux. El s
 msgid "This call is no longer ringing."
 msgstr "Esta llamada ya no está sonando."
 
+#: src/components/PasskeySettings.tsx
 #: src/pages/Artifacts.tsx
 msgid "This can't be undone."
-msgstr ""
+msgstr "Esta acción no se puede deshacer."
 
 #: src/pages/shell/dialogs.tsx
 msgid "This cannot be undone."
@@ -4888,6 +4959,7 @@ msgid "Type your answer"
 msgstr "Escribe tu respuesta"
 
 #: src/pages/BotContextMenu.tsx
+#: src/pages/Shell.tsx
 msgid "Unassigned"
 msgstr "Sin asignar"
 
@@ -5028,6 +5100,14 @@ msgstr "Usa Conectar para verificar la clave."
 #: src/pages/ExternalConversationSettings.tsx
 msgid "Use default guidance"
 msgstr ""
+
+#: src/pages/Auth.tsx
+msgid "Use email code"
+msgstr "Usar código por correo"
+
+#: src/pages/Auth.tsx
+msgid "Use password"
+msgstr "Usar contraseña"
 
 #: src/components/teach/TeachRecordingChrome.tsx
 msgid "Use Protected input for passwords."

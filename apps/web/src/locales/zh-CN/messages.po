@@ -347,7 +347,7 @@ msgstr ""
 
 #. placeholder {0}: bot.name
 #. placeholder {0}: group.spaceName
-#. placeholder {0}: sectionMenu.section.name
+#. placeholder {0}: section.name
 #: src/pages/BotContextMenu.tsx
 #: src/pages/Shell.tsx
 msgid "Actions for {0}"
@@ -392,6 +392,10 @@ msgstr "添加要监视的文件或文件夹"
 #: src/components/ApprovalRulesSettings.tsx
 msgid "Add a model in Settings to use this."
 msgstr "请在设置中添加模型后再使用。"
+
+#: src/components/PasskeyOffer.tsx
+msgid "Add a passkey for faster sign-in?"
+msgstr "添加通行密钥以更快登录？"
 
 #: src/pages/Shell.tsx
 msgid "Add a run time for this one-shot."
@@ -454,6 +458,11 @@ msgstr "添加 MCP 服务器"
 #: src/pages/PluginsOverlay.tsx
 msgid "Add OpenAPI"
 msgstr "添加 OpenAPI"
+
+#: src/components/PasskeyOffer.tsx
+#: src/components/PasskeySettings.tsx
+msgid "Add passkey"
+msgstr "添加通行密钥"
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Add remote MCP server"
@@ -573,6 +582,10 @@ msgstr "已有账户？"
 #: src/pages/ExternalConversationSettings.tsx
 msgid "Always act"
 msgstr ""
+
+#: src/components/AskCard.tsx
+msgid "Always allow {site}"
+msgstr "始终允许 {site}"
 
 #: src/components/AskCard.tsx
 msgid "Always allow this tool"
@@ -782,6 +795,7 @@ msgstr "头像工作室"
 msgid "Avatars"
 msgstr "头像"
 
+#: src/pages/Auth.tsx
 #: src/pages/Board.tsx
 #: src/pages/PluginsOverlay.tsx
 #: src/pages/RoutineEditor.tsx
@@ -804,7 +818,7 @@ msgstr "备用模型顺序"
 msgid "Backup models saved."
 msgstr "备用模型已保存。"
 
-#: src/pages/memory-providers/SupermemorySettingsForm.tsx
+#: src/pages/memory-providers/ConnectionModeFields.tsx
 msgid "Base URL"
 msgstr "Base URL"
 
@@ -933,6 +947,7 @@ msgstr "无法读取图像"
 #: src/components/ComputerMaintenanceActions.tsx
 #: src/components/ComputerUpdateProgress.tsx
 #: src/components/markdown-link-prompt.tsx
+#: src/components/PasskeySettings.tsx
 #: src/components/teach/TeachComputerOverlay.tsx
 #: src/pages/Artifacts.tsx
 #: src/pages/KnowledgeSection.tsx
@@ -1167,13 +1182,18 @@ msgstr "关闭用户设置"
 msgid "Close voice settings"
 msgstr "关闭语音设置"
 
-#: src/pages/memory-providers/SupermemorySettingsForm.tsx
+#: src/pages/memory-providers/ConnectionModeFields.tsx
 msgid "Cloud"
 msgstr "云端"
 
 #: src/components/AskCard.tsx
 msgid "Code"
 msgstr "代码"
+
+#: src/pages/Auth.tsx
+msgctxt "email sign-in"
+msgid "Code"
+msgstr "验证码"
 
 #. placeholder {0}: group.title
 #. placeholder {0}: item.chat.name
@@ -1351,6 +1371,10 @@ msgstr "已连接，下一条消息起即可使用其工具。"
 msgid "Connecting…"
 msgstr "正在连接…"
 
+#: src/pages/memory-providers/ConnectionModeFields.tsx
+msgid "Connection"
+msgstr "连接"
+
 #: src/lib/model-connection-preflight.ts
 msgid "Connection test failed."
 msgstr "连接测试失败。"
@@ -1366,6 +1390,7 @@ msgid "Context limit"
 msgstr "上下文限制"
 
 #: src/components/integrations/IntegrationSetup.tsx
+#: src/pages/Auth.tsx
 #: src/pages/Onboarding.tsx
 msgid "Continue"
 msgstr "继续"
@@ -1470,6 +1495,8 @@ msgid "Could not connect to the computer screen"
 msgstr ""
 
 #: src/components/AccountAccess.tsx
+#: src/components/PasskeyOffer.tsx
+#: src/components/PasskeySettings.tsx
 #: src/lib/account-security.ts
 #: src/lib/sso-flow.ts
 #: src/lib/user-error.ts
@@ -1568,6 +1595,7 @@ msgid "Could not install connector"
 msgstr "无法安装连接器"
 
 #: src/components/ErrorBoundary.tsx
+#: src/components/PasskeySettings.tsx
 #: src/pages/KnowledgeSection.tsx
 msgid "Could not load"
 msgstr "无法加载"
@@ -1667,6 +1695,8 @@ msgstr "无法播放测试片段"
 msgid "Could not reach the model server."
 msgstr "无法连接到模型服务器。"
 
+#: src/components/PasskeyOffer.tsx
+#: src/components/PasskeySettings.tsx
 #: src/lib/computer-sandbox.ts
 #: src/lib/user-error.ts
 #: src/pages/AccountSettingsOverlay.tsx
@@ -1987,6 +2017,7 @@ msgstr "默认（{0}）"
 msgid "Default scope"
 msgstr "默认范围"
 
+#: src/components/PasskeySettings.tsx
 #: src/pages/Artifacts.tsx
 #: src/pages/BotContextMenu.tsx
 #: src/pages/KnowledgeSection.tsx
@@ -1997,10 +2028,12 @@ msgstr "默认范围"
 msgid "Delete"
 msgstr "删除"
 
+#. placeholder {0}: passkeyLabel(deleting, t`Passkey`)
 #. placeholder {0}: pendingDelete.name
+#: src/components/PasskeySettings.tsx
 #: src/pages/Artifacts.tsx
 msgid "Delete \"{0}\"?"
-msgstr ""
+msgstr "删除“{0}”？"
 
 #. placeholder {0}: artifact.name
 #. placeholder {0}: bot.name
@@ -2040,6 +2073,7 @@ msgstr ""
 msgid "deleted"
 msgstr "已删除"
 
+#: src/components/PasskeySettings.tsx
 #: src/pages/Artifacts.tsx
 #: src/pages/shell/dialogs.tsx
 msgid "Deleting…"
@@ -2119,6 +2153,7 @@ msgstr "正在断开…"
 
 #: src/components/AskCard.tsx
 #: src/components/ComputerUpdateProgress.tsx
+#: src/components/PasskeyOffer.tsx
 #: src/components/teach/TeachComputerOverlay.tsx
 #: src/pages/shell/message-cards.tsx
 msgid "Dismiss"
@@ -2704,6 +2739,10 @@ msgstr "间隔数量"
 msgid "Interval unit"
 msgstr "间隔单位"
 
+#: src/lib/user-error.ts
+msgid "Invalid code"
+msgstr "验证码无效"
+
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/shell/bot-panel.tsx
 msgid "Isolated"
@@ -2864,7 +2903,7 @@ msgstr "正在加载语音提供方…"
 msgid "Loading…"
 msgstr "加载中…"
 
-#: src/pages/memory-providers/SupermemorySettingsForm.tsx
+#: src/pages/memory-providers/ConnectionModeFields.tsx
 msgid "Local"
 msgstr "本地"
 
@@ -3304,6 +3343,7 @@ msgid "No matching artifacts on this page."
 msgstr ""
 
 #: src/pages/ModelSettingsOverlay.tsx
+#: src/pages/shell/chat-model-picker.tsx
 msgid "No matching models"
 msgstr "没有匹配的模型"
 
@@ -3559,6 +3599,14 @@ msgstr "PagerDuty 事件"
 msgid "Park"
 msgstr "搁置"
 
+#: src/components/PasskeySettings.tsx
+msgid "Passkey"
+msgstr "通行密钥"
+
+#: src/components/PasskeySettings.tsx
+msgid "Passkeys"
+msgstr "通行密钥"
+
 #: src/components/AskCard.tsx
 #: src/pages/AccountSettingsOverlay.tsx
 #: src/pages/Auth.tsx
@@ -3636,6 +3684,10 @@ msgstr "选择要检查的工具"
 
 #: src/pages/BotContextMenu.tsx
 msgid "Pin"
+msgstr "置顶"
+
+#: src/pages/Shell.tsx
+msgid "Pinned"
 msgstr "置顶"
 
 #: src/components/ArtifactFileCard.tsx
@@ -3909,6 +3961,10 @@ msgstr "已移除，但列表刷新失败"
 msgid "Removing…"
 msgstr "正在移除…"
 
+#: src/components/PasskeySettings.tsx
+msgid "Rename"
+msgstr "重命名"
+
 #: src/pages/BotContextMenu.tsx
 #: src/pages/Shell.tsx
 #: src/pages/shell/dialogs.tsx
@@ -3952,6 +4008,10 @@ msgstr ""
 #: src/pages/Shell.tsx
 msgid "Replying to {0}"
 msgstr ""
+
+#: src/lib/user-error.ts
+msgid "Request a new code"
+msgstr "请重新获取验证码"
 
 #: src/pages/shell/message-cards.tsx
 msgid "Research & writing"
@@ -4016,8 +4076,10 @@ msgid "Restoring your workspace"
 msgstr ""
 
 #: src/components/AccountAccess.tsx
+#: src/components/PasskeySettings.tsx
 #: src/pages/Auth.tsx
 #: src/pages/ModelBackupsSettings.tsx
+#: src/pages/PluginsOverlay.tsx
 #: src/pages/SettingsOverlay.tsx
 msgid "Retry"
 msgstr "重试"
@@ -4112,6 +4174,7 @@ msgid "Runs when this bot receives a verified message from this provider."
 msgstr ""
 
 #: src/components/AskCard.tsx
+#: src/components/PasskeySettings.tsx
 #: src/components/teach/SkillDraftCard.tsx
 #: src/pages/Board.tsx
 #: src/pages/ExternalConversationSettings.tsx
@@ -4185,6 +4248,7 @@ msgstr "回答是或否，或一句话说明。"
 #: src/pages/PluginsOverlay.tsx
 #: src/pages/Shell.tsx
 #: src/pages/shell/bot-picker.tsx
+#: src/pages/shell/chat-model-picker.tsx
 #: src/pages/shell/command-palette.tsx
 msgid "Search"
 msgstr "搜索"
@@ -4211,6 +4275,7 @@ msgid "Search integrations.sh"
 msgstr ""
 
 #: src/pages/ModelSettingsOverlay.tsx
+#: src/pages/shell/chat-model-picker.tsx
 msgid "Search models"
 msgstr "搜索模型"
 
@@ -4397,10 +4462,11 @@ msgid "Sign in"
 msgstr "登录"
 
 #: src/components/AccountAccess.tsx
+#: src/lib/passkeys.ts
 #: src/lib/user-error.ts
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Sign in again"
-msgstr ""
+msgstr "重新登录"
 
 #: src/pages/Auth.tsx
 msgid "Sign in to Rakazo"
@@ -4409,6 +4475,10 @@ msgstr "登录 Rakazo"
 #: src/lib/user-error.ts
 msgid "Sign in to your existing account to link SSO"
 msgstr "请登录现有账户以关联 SSO"
+
+#: src/components/PasskeySignIn.tsx
+msgid "Sign in with passkey"
+msgstr "使用通行密钥登录"
 
 #: src/lib/model-connection-preflight.ts
 msgid "Sign in with the subscription, or test the API key instead."
@@ -4702,9 +4772,10 @@ msgstr "此 Bot 运行在这台电脑上，而不是 Linux 桌面。Shell 和文
 msgid "This call is no longer ringing."
 msgstr ""
 
+#: src/components/PasskeySettings.tsx
 #: src/pages/Artifacts.tsx
 msgid "This can't be undone."
-msgstr ""
+msgstr "此操作无法撤销。"
 
 #: src/pages/shell/dialogs.tsx
 msgid "This cannot be undone."
@@ -4888,6 +4959,7 @@ msgid "Type your answer"
 msgstr "输入你的回答"
 
 #: src/pages/BotContextMenu.tsx
+#: src/pages/Shell.tsx
 msgid "Unassigned"
 msgstr "未分配"
 
@@ -5028,6 +5100,14 @@ msgstr "请使用“连接”验证密钥。"
 #: src/pages/ExternalConversationSettings.tsx
 msgid "Use default guidance"
 msgstr ""
+
+#: src/pages/Auth.tsx
+msgid "Use email code"
+msgstr "使用邮箱验证码"
+
+#: src/pages/Auth.tsx
+msgid "Use password"
+msgstr "使用密码"
 
 #: src/components/teach/TeachRecordingChrome.tsx
 msgid "Use Protected input for passwords."

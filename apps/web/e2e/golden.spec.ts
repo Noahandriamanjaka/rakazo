@@ -5,6 +5,7 @@ import {
   completeOnboarding,
   realSandboxTimeout,
   rpc,
+  showPasswordForm,
   signup,
 } from "./helpers";
 
@@ -99,9 +100,9 @@ test("takeover, routine, plugins, and export are reachable", async ({ page }, te
   // Agent computer toggles the panel. Re-open when closed so Open can refresh computer status.
   const sidePanel = page.getByTestId("side-panel");
   if ((await sidePanel.getAttribute("data-panel")) === "computer") {
-    await page.getByTitle("Agent computer").click();
+    await page.getByRole("button", { name: "Agent computer", exact: true }).click();
   }
-  await page.getByTitle("Agent computer").click();
+  await page.getByRole("button", { name: "Agent computer", exact: true }).click();
   await expect(sidePanel).toHaveAttribute("data-panel", "computer");
   await expect(sidePanel).toHaveCSS("width", "384px");
   const [mainBox, panelBox] = await Promise.all([
@@ -246,9 +247,14 @@ test("takeover, routine, plugins, and export are reachable", async ({ page }, te
   await expect(linearRow.getByRole("button", { name: "Add", exact: true })).toBeVisible();
 
   const advanced = page.getByTestId("integrations-advanced");
+  const browseMcp = page.getByRole("button", { name: "Browse MCP servers", exact: true });
+  await expect(browseMcp).toBeHidden();
   await advanced.evaluate((element) => {
     (element as HTMLDetailsElement).open = true;
   });
+  await expect(
+    advanced.getByRole("button", { name: "Browse MCP servers", exact: true }),
+  ).toBeVisible();
   await expect(page.getByRole("button", { name: "Manage MCP servers", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Add MCP server", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Add OpenAPI", exact: true })).toBeVisible();
@@ -332,7 +338,7 @@ test("takeover, routine, plugins, and export are reachable", async ({ page }, te
   await page.getByText("Chief").first().click();
   const gear = page.getByRole("button", { name: "Show settings" });
   if (!(await gear.isVisible().catch(() => false))) {
-    await page.getByTitle("Agent computer").click();
+    await page.getByRole("button", { name: "Agent computer", exact: true }).click();
   }
   await gear.click();
   const downloadPromise = page.waitForEvent("download");
@@ -449,6 +455,7 @@ test("sign-in, spawn, and stop work in the shell", async ({ page }, testInfo) =>
   await page.context().clearCookies();
   await page.goto("/sign-in");
   await page.getByPlaceholder("Your email address").fill(email);
+  await showPasswordForm(page);
   await page.getByPlaceholder("Password").fill("password12");
   await page.getByRole("button", { name: "Continue with email" }).click();
   await page.waitForURL(/\/app/, { timeout: 20_000 });

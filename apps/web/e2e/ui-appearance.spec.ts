@@ -230,10 +230,6 @@ test("sidebar footer keeps the account identity readable and installs a ready de
   await expect(header).toHaveText(`${session.user.name}${email}`);
   await expect(page.getByText("New update available", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Install", exact: true })).toHaveCount(0);
-  await expect(footer.getByRole("button", { name: "Install update", exact: true })).toHaveAttribute(
-    "title",
-    "Install update",
-  );
   await expect(footer.locator('span[aria-hidden="true"] > span')).toHaveCount(3);
   await captureScreenshot(page, testInfo, "sidebar-footer-menu-update");
   await page.keyboard.press("Escape");
@@ -404,7 +400,7 @@ test("footer app marks follow the integrations overlay", async ({ page }) => {
   await expect(footer.locator("img")).toHaveAttribute("src", logo);
   failCatalog = true;
   await footer.getByRole("button", { name: "Connect apps", exact: true }).click();
-  await expect(page.getByText("Service Unavailable", { exact: true })).toBeVisible();
+  await expect(page.getByText("Could not reach the server", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Close integrations", exact: true }).click();
   await expect(footer.locator("img")).toHaveAttribute("src", logo);
   failCatalog = false;

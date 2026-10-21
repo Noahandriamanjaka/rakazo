@@ -40,14 +40,15 @@ import {
   buildComposerMentionOptions,
   clampMentionHighlightIndex,
   cronFromPreset,
+  dismissableAskMessageIds,
   expandPeerReplies,
   foldPeerReplies,
-  formatMessageTime,
   groupVoiceChats,
   inferAttachmentMimeType,
   isActive,
   isPeerReceiptBlocks,
   isRunTerminalEvent,
+  isRunWorking,
   isToolActivityBlock,
   MODEL_REQUIRED_SEND_ERROR,
   mentionChipKey,
@@ -73,6 +74,12 @@ import {
   AvatarStyleProvider,
   BotAvatar,
   Button,
+  Collapsible,
+  CollapsibleContent,
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
   cn,
   DropdownMenu,
   DropdownMenuContent,
@@ -154,7 +161,9 @@ import {
   useHoldToTalk,
 } from "../components/composer/HoldToTalk";
 import { lazyOverlay } from "../components/ErrorBoundary";
+import { IconTooltip } from "../components/IconTooltip";
 import { MessageHoverMetadata } from "../components/MessageHoverMetadata";
+import { PasskeyOffer } from "../components/PasskeyOffer";
 import { SidebarFooter } from "../components/SidebarFooter";
 import {
   LIVE_TOOL_STEP_WINDOW,
@@ -288,7 +297,6 @@ import {
 import { speaker } from "../lib/tts";
 import { errorText } from "../lib/user-error";
 import { ActivityList } from "./ActivityList";
-import type { ContextMenuPosition } from "./BotContextMenu";
 import { CreateGroupForm, GroupSettings, memberName } from "./GroupPanel";
 import { HostComputerPrompt } from "./HostComputerPrompt";
 import { ResizableSidePanel } from "./ResizableSidePanel";
@@ -713,25 +721,14 @@ function SpaceShell() {
       return next;
     });
   }, []);
-  const [botMenu, setBotMenu] = useState<{
-    kind: "bot" | "group";
-    id: string;
-    position: ContextMenuPosition;
-  } | null>(null);
-  // The context menu anchors to the pointer, so return focus to the row that opened it.
-  const botMenuAnchor = useRef<HTMLElement | null>(null);
-  useEffect(() => {
-    if (botMenu || !botMenuAnchor.current) return;
-    botMenuAnchor.current.focus();
-    botMenuAnchor.current = null;
-  }, [botMenu]);
+  const [botMenu, setBotMenu] = useState<{ kind: "bot" | "group"; id: string } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Bot | null>(null);
   const [deleteGroupTarget, setDeleteGroupTarget] = useState<Group | null>(null);
   const [deleteSpaceTarget, setDeleteSpaceTarget] = useState<Space | null>(null);
   const [renameSpaceTarget, setRenameSpaceTarget] = useState<Space | null>(null);
   const [spaceMenu, setSpaceMenu] = useState<{
     id: string;
-    position: ContextMenuPosition;
+    position: { x: number; y: number };
   } | null>(null);
   const spaceMenuAnchor = useRef<HTMLElement | null>(null);
   useEffect(() => {
@@ -757,18 +754,6 @@ function SpaceShell() {
     section: BotSection;
     spaceId: string;
   } | null>(null);
-  const [sectionMenu, setSectionMenu] = useState<{
-    section: BotSection;
-    spaceId: string;
-    position: ContextMenuPosition;
-  } | null>(null);
-  const sectionMenuAnchor = useRef<HTMLElement | null>(null);
-  useEffect(() => {
-    if (sectionMenu || !sectionMenuAnchor.current) return;
-    sectionMenuAnchor.current.focus();
-    sectionMenuAnchor.current = null;
-  }, [sectionMenu]);
-  const closeSectionMenu = useCallback(() => setSectionMenu(null), []);
   const [booting, setBooting] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [initialBotsLoaded, setInitialBotsLoaded] = useState(false);
@@ -1696,8 +1681,11 @@ function SpaceShell() {
               },
             ]
           : [];
-    return sidebarGroupsForSpaces(sidebarSpaces, query);
-  }, [bootstrapMe, botSections, bots, groups, spaces, query]);
+    return sidebarGroupsForSpaces(sidebarSpaces, query, {
+      pinned: t`Pinned`,
+      unassigned: t`Unassigned`,
+    });
+  }, [bootstrapMe, botSections, bots, groups, spaces, query, t]);
 
   const spaceSwitchRequest = useRef(0);
   useEffect(
@@ -2050,9 +2038,11 @@ function SpaceShell() {
   }, []);
   const currentRuns = activeThreadRuns(activeSnapshot);
   const answerableAskIds = useMemo(() => answerableAskMessageIds(activeSnapshot), [activeSnapshot]);
-  const workingRuns = currentRuns.filter((run) =>
-    ["running", "queued", "leased"].includes(run.status),
+  const dismissableAskIds = useMemo(
+    () => dismissableAskMessageIds(activeSnapshot, userId),
+    [activeSnapshot, userId],
   );
+  const workingRuns = currentRuns.filter((run) => isRunWorking(run.status));
   const transcriptRunning = workingRuns.length > 0;
   const composerRunning = currentRuns.some((run) => isActive(run.status));
   const runError = threadRunError(activeSnapshot, dismissedRunErrorIds);
@@ -2164,9 +2154,11 @@ function SpaceShell() {
     ).then((lists) => {
       if (!cancelled) setMentionRoutines(lists.flat());
     });
+    // The catalog call reconciles connection rows, so list them after it.
+    const catalogRequest = rpc.connections.catalog({}).catch(() => null);
     void Promise.all([
-      rpc.connections.list().catch(() => null),
-      rpc.connections.catalog({}).catch(() => null),
+      catalogRequest.then(() => rpc.connections.list().catch(() => null)),
+      catalogRequest,
     ]).then(([connections, catalog]) => {
       if (cancelled) return;
       const connected = connections?.filter((row) => row.status === "connected") ?? [];
@@ -2262,7 +2254,7 @@ function SpaceShell() {
     if (botId) void jumpToMessageRef.current({ botId, messageId }).catch(() => undefined);
   }, []);
   const answerMessage = useCallback(
-    async (message: ThreadMessage, text: string, username?: string) => {
+    async (message: ThreadMessage, text: string, username?: string, dismiss?: boolean) => {
       const botId = activeBotId.current;
       const groupId = activeGroupId.current;
       if (!botId && !groupId) return;
@@ -2272,12 +2264,16 @@ function SpaceShell() {
         messageId: message.id,
         answer: text,
         ...(username ? { username } : {}),
+        ...(dismiss ? { dismiss: true as const } : {}),
       });
-      if (groupId && activeGroupId.current === groupId) {
-        await refreshGroupThreadRef.current(groupId);
-      } else if (botId && activeBotId.current === botId) {
-        await refreshThreadRef.current(botId);
-      }
+      // The answer is saved; live events can reconcile a failed refresh.
+      try {
+        if (groupId && activeGroupId.current === groupId) {
+          await refreshGroupThreadRef.current(groupId);
+        } else if (botId && activeBotId.current === botId) {
+          await refreshThreadRef.current(botId);
+        }
+      } catch {}
     },
     [],
   );
@@ -3030,6 +3026,110 @@ function SpaceShell() {
 
   const { label: userName, initial: initials } = accountDisplay(session.data?.user ?? {}, t`You`);
 
+  const botMenuContent = contextChat ? (
+    <BotContextMenu
+      bot={contextChat}
+      onClose={closeBotMenu}
+      sections={botSections}
+      onTogglePinned={() => {
+        setBotMenu(null);
+        const request = contextBot
+          ? rpc.bots.update({ botId: contextBot.id, pinned: !contextBot.pinned })
+          : rpc.groups.update({
+              groupId: contextGroup!.id,
+              pinned: !contextGroup!.pinned,
+            });
+        void request.then(() => refreshBots());
+      }}
+      onToggleUnread={() => {
+        const unread = !contextChat.unread;
+        setBotMenu(null);
+        if (contextBot) {
+          const request = unread ? markBotUnread(contextBot.id) : markBotRead(contextBot.id);
+          void request.catch(() => undefined);
+        } else {
+          const request = unread
+            ? rpc.threads.markUnread({ groupId: contextGroup!.id })
+            : rpc.threads.markRead({ groupId: contextGroup!.id });
+          void request
+            .then(() =>
+              setGroups((current) =>
+                current.map((group) =>
+                  group.id === contextGroup!.id ? { ...group, unread } : group,
+                ),
+              ),
+            )
+            .catch(() => undefined);
+        }
+      }}
+      onMoveToSection={(sectionId) => {
+        setBotMenu(null);
+        if (sectionId === contextChat.sectionId) return;
+        const request = contextBot
+          ? rpc.bots.update({ botId: contextBot.id, sectionId })
+          : rpc.groups.update({ groupId: contextGroup!.id, sectionId });
+        void request.then(() => refreshBots());
+      }}
+      onCreateSection={() => {
+        setNewSectionTarget(
+          contextBot ? { kind: "bot", chat: contextBot } : { kind: "group", chat: contextGroup! },
+        );
+        setBotMenu(null);
+      }}
+      onRenameSection={(sectionId) => {
+        const section = botSections.find((item) => item.id === sectionId);
+        const spaceId = bootstrapMe?.spaceId;
+        if (section && spaceId) setRenameSectionTarget({ section, spaceId });
+        setBotMenu(null);
+      }}
+      onEdit={() => {
+        const destKey =
+          userId && bootstrapMe?.spaceId
+            ? rightPanelStorageKey(
+                userId,
+                bootstrapMe.spaceId,
+                contextBot ? "bot" : "group",
+                contextChat.id,
+              )
+            : null;
+        explicitPanelTarget.current = destKey;
+        pendingPanelRestore.current = null;
+        navigate(contextBot ? `/app/${contextBot.id}` : `/app/g/${contextGroup!.id}`);
+        // Mark the destination key restored so we do not write settings onto the source chat.
+        setPanelState(contextBot ? "settings" : "group-settings");
+        setRestoredPanelKey(destKey);
+        setBotMenu(null);
+      }}
+      onDuplicate={() => {
+        setBotMenu(null);
+        const request = contextBot
+          ? rpc.bots.duplicate({ botId: contextBot.id })
+          : rpc.groups.duplicate({ groupId: contextGroup!.id });
+        void request.then(async (chat) => {
+          await refreshBots();
+          navigate(contextBot ? `/app/${chat.id}` : `/app/g/${chat.id}`);
+        });
+      }}
+      onClear={() => {
+        setClearTarget(
+          contextBot ? { kind: "bot", chat: contextBot } : { kind: "group", chat: contextGroup! },
+        );
+        setBotMenu(null);
+      }}
+      onArchive={() => {
+        setBotMenu(null);
+        const request = contextBot
+          ? rpc.bots.archive({ botId: contextBot.id })
+          : rpc.groups.archive({ groupId: contextGroup!.id });
+        void request.then(() => refreshBots(true));
+      }}
+      onDelete={() => {
+        if (contextBot) setDeleteTarget(contextBot);
+        else setDeleteGroupTarget(contextGroup!);
+        setBotMenu(null);
+      }}
+    />
+  ) : null;
   const shell = (
     <div
       data-testid="shell-root"
@@ -3085,22 +3185,27 @@ function SpaceShell() {
       {bootstrapMe !== undefined ? (
         <HostComputerPrompt initialMe={bootstrapMe ?? undefined} onMeUpdated={setBootstrapMe} />
       ) : null}
-      {mobileSidebarOpen ? (
-        <button
-          type="button"
-          aria-label={t`Close navigation`}
-          onClick={() => setMobileSidebarOpen(false)}
-          className="absolute inset-y-0 end-0 start-[min(calc(100%-48px),316px)] z-30 bg-overlay md:hidden"
-        />
-      ) : null}
+      <button
+        type="button"
+        aria-label={t`Close navigation`}
+        aria-hidden={mobileSidebarOpen ? undefined : true}
+        inert={mobileSidebarOpen ? undefined : true}
+        tabIndex={mobileSidebarOpen ? undefined : -1}
+        onClick={() => setMobileSidebarOpen(false)}
+        className={`absolute inset-y-0 end-0 start-[min(calc(100%-48px),316px)] z-30 bg-overlay transition-opacity duration-150 ease-out motion-reduce:transition-none md:hidden ${
+          mobileSidebarOpen ? "opacity-100" : "pointer-events-none opacity-0"
+        }`}
+      />
       <aside
         data-testid="bots-sidebar"
         data-space-switch="sidebar"
         data-bots-sidebar-density={botsSidebarDensity}
         data-collapsed={botsSidebarCollapsed ? "true" : "false"}
         inert={botsSidebarCollapsed && !mobileSidebarOpen ? true : undefined}
-        className={`absolute inset-y-0 start-0 z-40 flex w-[calc(100%-48px)] max-w-[316px] shrink-0 flex-col border-e border-sidebar-border bg-sidebar transition-[transform,width,opacity] md:static md:z-auto md:translate-x-0 ${
-          mobileSidebarOpen ? "translate-x-0" : "-translate-x-full rtl:translate-x-full"
+        className={`absolute inset-y-0 start-0 z-40 flex w-[calc(100%-48px)] max-w-[316px] shrink-0 flex-col border-e border-sidebar-border bg-sidebar transition-[transform,width,opacity] md:static md:z-auto ${
+          mobileSidebarOpen
+            ? "translate-x-0"
+            : "max-md:-translate-x-full max-md:rtl:translate-x-full"
         } ${
           botsSidebarCollapsed
             ? "md:w-0 md:max-w-0 md:overflow-hidden md:border-e-0 md:opacity-0 md:pointer-events-none"
@@ -3110,44 +3215,48 @@ function SpaceShell() {
         <div className="app-drag flex items-center justify-between px-[18px] pb-3 pt-4">
           <WindowChrome />
           <div className="relative flex items-center gap-2.5">
-            <button
-              type="button"
-              aria-label={t`Activity`}
-              aria-pressed={activityMode}
-              title={t`Activity`}
-              data-activity-mode={activityMode ? "on" : "off"}
-              onClick={toggleActivityMode}
-              className={`app-no-drag flex h-7 w-7 items-center justify-center rounded-full ${
-                activityMode
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground/70 hover:text-foreground/75"
-              }`}
-            >
-              <Bell
-                size={15}
-                strokeWidth={1.8}
-                fill={activityMode ? "currentColor" : "none"}
-                aria-hidden="true"
-              />
-            </button>
-            <button
-              type="button"
-              className="app-no-drag hidden h-7 w-7 items-center justify-center rounded-full text-muted-foreground/70 hover:text-foreground/75 md:inline-flex"
-              aria-label={t`Minimize bots`}
-              title={t`Minimize bots`}
-              data-testid="minimize-bots-sidebar"
-              onClick={() => setBotsSidebarCollapsedPref(true)}
-            >
-              <PanelLeftClose size={15} strokeWidth={1.8} aria-hidden="true" />
-            </button>
-            <Popover open={createMenuOpen} onOpenChange={setCreateMenuOpen}>
-              <PopoverTrigger
-                className="app-no-drag text-[21px] text-muted-foreground/70 hover:text-foreground/75"
-                title={t`Create`}
-                data-testid="create-menu-trigger"
+            <IconTooltip label={t`Activity`}>
+              <button
+                type="button"
+                aria-label={t`Activity`}
+                aria-pressed={activityMode}
+                data-activity-mode={activityMode ? "on" : "off"}
+                onClick={toggleActivityMode}
+                className={`app-no-drag flex h-7 w-7 items-center justify-center rounded-full ${
+                  activityMode
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground/70 hover:text-foreground/75"
+                }`}
               >
-                +
-              </PopoverTrigger>
+                <Bell
+                  size={15}
+                  strokeWidth={1.8}
+                  fill={activityMode ? "currentColor" : "none"}
+                  aria-hidden="true"
+                />
+              </button>
+            </IconTooltip>
+            <IconTooltip label={t`Minimize bots`}>
+              <button
+                type="button"
+                className="app-no-drag hidden h-7 w-7 items-center justify-center rounded-full text-muted-foreground/70 hover:text-foreground/75 md:inline-flex"
+                aria-label={t`Minimize bots`}
+                data-testid="minimize-bots-sidebar"
+                onClick={() => setBotsSidebarCollapsedPref(true)}
+              >
+                <PanelLeftClose size={15} strokeWidth={1.8} aria-hidden="true" />
+              </button>
+            </IconTooltip>
+            <Popover open={createMenuOpen} onOpenChange={setCreateMenuOpen}>
+              <IconTooltip label={t`Create`}>
+                <PopoverTrigger
+                  className="app-no-drag text-[21px] text-muted-foreground/70 hover:text-foreground/75"
+                  aria-label={t`Create`}
+                  data-testid="create-menu-trigger"
+                >
+                  +
+                </PopoverTrigger>
+              </IconTooltip>
               {/* Unmount with the state change so the panel it opens never coexists with the menu. */}
               {createMenuOpen ? (
                 <PopoverContent
@@ -3282,6 +3391,12 @@ function SpaceShell() {
                     ? { kind: "section", sectionId: group.sectionId }
                     : null;
                 const headerDropKey = `header:${group.key}`;
+                const section = group.sectionId
+                  ? (group.spaceId === bootstrapMe?.spaceId
+                      ? botSections
+                      : (spaces.find((space) => space.id === group.spaceId)?.botSections ?? [])
+                    ).find((item) => item.id === group.sectionId)
+                  : undefined;
                 return (
                   <div
                     key={group.key}
@@ -3315,77 +3430,86 @@ function SpaceShell() {
                         }}
                       >
                         {group.title ? (
-                          <button
-                            type="button"
-                            className={`flex min-w-0 items-center justify-between gap-2 rounded-lg px-2.5 py-1 text-[11px] font-semibold tracking-wider uppercase text-muted-foreground/60 hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring ${hasSpaceActions ? "col-start-1 row-start-1 w-full pe-8" : "flex-1"}`}
-                            onClick={() => {
-                              if (group.emptySpaceId) {
-                                openSpaceChat(group.emptySpaceId, "/onboarding");
-                                return;
-                              }
-                              toggleSidebarSection(group.key);
-                            }}
-                            onContextMenu={
-                              group.sectionId
-                                ? (event) => {
-                                    event.preventDefault();
-                                    // Prefer section rename over the space menu when both apply;
-                                    // the dedicated space-actions button still opens the space menu.
-                                    const sections =
-                                      group.spaceId === bootstrapMe?.spaceId
-                                        ? botSections
-                                        : (spaces.find((space) => space.id === group.spaceId)
-                                            ?.botSections ?? []);
-                                    const section = sections.find(
-                                      (item) => item.id === group.sectionId,
-                                    );
-                                    if (!section) return;
-                                    sectionMenuAnchor.current = event.currentTarget;
-                                    setSectionMenu({
-                                      section,
-                                      spaceId: group.spaceId,
-                                      position: { x: event.clientX, y: event.clientY },
-                                    });
-                                  }
-                                : hasSpaceActions
-                                  ? (event) => {
-                                      event.preventDefault();
-                                      spaceMenuAnchor.current = event.currentTarget;
-                                      setSpaceMenu({
-                                        id: group.spaceId,
-                                        position: { x: event.clientX, y: event.clientY },
-                                      });
-                                    }
-                                  : undefined
-                            }
-                            aria-expanded={group.emptySpaceId ? undefined : !collapsed}
-                            aria-label={
-                              group.emptySpaceId
-                                ? t`Open ${group.title}`
-                                : collapsed
-                                  ? t`Expand ${group.title}`
-                                  : t`Collapse ${group.title}`
-                            }
-                          >
-                            <span className="flex min-w-0 items-center gap-1.5 truncate">
-                              {group.showLock ? (
-                                <Lock size={11} strokeWidth={2} aria-hidden="true" />
-                              ) : null}
-                              <span className="truncate">{group.title}</span>
-                            </span>
-                            {group.emptySpaceId ? null : (
-                              <ChevronDown
-                                size={14}
-                                strokeWidth={1.8}
-                                className={
-                                  collapsed
-                                    ? "-rotate-90 transition-transform"
-                                    : "transition-transform"
+                          // Prefer the section menu over the space menu when both apply;
+                          // the dedicated space-actions button still opens the space menu.
+                          <ContextMenu disabled={!section}>
+                            <ContextMenuTrigger
+                              render={<button type="button" />}
+                              className={`flex min-w-0 items-center justify-between gap-2 rounded-lg px-2.5 py-1 text-[11px] font-semibold tracking-wider uppercase text-muted-foreground/60 hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring ${hasSpaceActions ? "col-start-1 row-start-1 w-full pe-8" : "flex-1"}`}
+                              onClick={() => {
+                                if (group.emptySpaceId) {
+                                  openSpaceChat(group.emptySpaceId, "/onboarding");
+                                  return;
                                 }
-                                aria-hidden="true"
-                              />
-                            )}
-                          </button>
+                                toggleSidebarSection(group.key);
+                              }}
+                              onContextMenu={
+                                section
+                                  ? (event) => event.currentTarget.focus()
+                                  : hasSpaceActions
+                                    ? (event) => {
+                                        event.preventDefault();
+                                        spaceMenuAnchor.current = event.currentTarget;
+                                        setSpaceMenu({
+                                          id: group.spaceId,
+                                          position: { x: event.clientX, y: event.clientY },
+                                        });
+                                      }
+                                    : undefined
+                              }
+                              aria-expanded={group.emptySpaceId ? undefined : !collapsed}
+                              aria-label={
+                                group.emptySpaceId
+                                  ? t`Open ${group.title}`
+                                  : collapsed
+                                    ? t`Expand ${group.title}`
+                                    : t`Collapse ${group.title}`
+                              }
+                            >
+                              <span className="flex min-w-0 items-center gap-1.5 truncate">
+                                {group.showLock ? (
+                                  <Lock size={11} strokeWidth={2} aria-hidden="true" />
+                                ) : null}
+                                <span className="truncate">{group.title}</span>
+                              </span>
+                              {group.emptySpaceId ? null : (
+                                <ChevronDown
+                                  size={14}
+                                  strokeWidth={1.8}
+                                  className={
+                                    collapsed
+                                      ? "-rotate-90 transition-transform"
+                                      : "transition-transform"
+                                  }
+                                  aria-hidden="true"
+                                />
+                              )}
+                            </ContextMenuTrigger>
+                            {section ? (
+                              <ContextMenuContent
+                                aria-label={t`Actions for ${section.name}`}
+                                className="w-[220px]"
+                              >
+                                <ContextMenuItem
+                                  onClick={() =>
+                                    setRenameSectionTarget({ section, spaceId: group.spaceId })
+                                  }
+                                >
+                                  <Pencil />
+                                  {t`Rename section`}
+                                </ContextMenuItem>
+                                <ContextMenuItem
+                                  variant="destructive"
+                                  onClick={() =>
+                                    setDeleteSectionTarget({ section, spaceId: group.spaceId })
+                                  }
+                                >
+                                  <Trash2 />
+                                  {t`Delete section`}
+                                </ContextMenuItem>
+                              </ContextMenuContent>
+                            ) : null}
+                          </ContextMenu>
                         ) : null}
                         {hasSpaceActions ? (
                           <Button
@@ -3411,282 +3535,302 @@ function SpaceShell() {
                         ) : null}
                       </div>
                     ) : null}
-                    {!collapsed &&
-                      nestedRows.map(({ item, depth, hasChildren, parentId }) => {
-                        const parentCollapsed =
-                          hasChildren && collapsedRosterParents.has(item.chat.id);
-                        const selected =
-                          (item.kind === "bot" && !inGroup && active?.id === item.chat.id) ||
-                          (item.kind === "group" && inGroup && activeGroup?.id === item.chat.id);
-                        const compact = botsSidebarDensity === "compact";
-                        const workStatusLabel =
-                          item.kind === "bot" ? rosterWorkStatusLabel(item.chat.status) : null;
-                        const rowError =
-                          item.kind === "bot" &&
-                          (rosterHasUndismissedRunError(
-                            item.chat.runErrorId,
-                            dismissedRunErrorIds,
-                          ) ||
-                            (active?.id === item.chat.id && Boolean(displayedRunError)));
-                        const compactStatusLabel =
-                          compact && item.kind === "bot"
-                            ? rowError
-                              ? t`Error`
-                              : compactRosterStatusLabel(item.chat.status)
-                            : null;
-                        const rosterLine = compact
-                          ? compactStatusLabel
-                          : (workStatusLabel ??
-                            (item.kind === "bot"
-                              ? item.chat.preview ||
-                                (item.chat.status !== "idle" ? item.chat.status : "")
-                              : item.chat.preview ||
-                                item.chat.members.map((member) => member.name).join(", ")));
-                        const rowDropTarget: RosterDropTarget | null =
-                          item.chat.spaceId !== bootstrapMe?.spaceId
-                            ? null
-                            : item.kind === "bot"
-                              ? { kind: "bot", chat: item.chat }
-                              : {
-                                  kind: "group",
-                                  chat: {
-                                    id: item.chat.id,
-                                    memberIds: item.chat.members.map((member) => member.botId),
-                                  },
-                                };
-                        const rowSameParent =
-                          Boolean(draggedBotId) &&
-                          groupBotIds.includes(draggedBotId ?? "") &&
-                          rosterParent.get(draggedBotId ?? "") === parentId;
-                        const rowDropKey = `row:${item.kind}:${item.chat.id}`;
-                        return (
-                          <div
-                            key={`${item.kind}:${item.chat.id}`}
-                            className="group/row relative"
-                            style={{
-                              opacity:
-                                item.kind === "bot" && draggedBotId === item.chat.id ? 0.55 : 1,
-                            }}
-                          >
-                            {hasChildren ? (
-                              <span
-                                className="absolute inset-y-0 z-10 flex w-3.5 items-center justify-center"
-                                style={{ insetInlineStart: `${10 + depth * 14}px` }}
-                              >
-                                <button
-                                  type="button"
-                                  aria-expanded={!parentCollapsed}
-                                  aria-label={
-                                    parentCollapsed
-                                      ? t`Expand ${item.chat.name}`
-                                      : t`Collapse ${item.chat.name}`
-                                  }
-                                  className="inline-flex size-3.5 items-center justify-center rounded-sm text-muted-foreground hover:text-foreground"
-                                  onClick={() => toggleRosterParent(item.chat.id)}
-                                >
-                                  <ChevronDown
-                                    size={12}
-                                    strokeWidth={2}
-                                    className={`transition-transform ${
-                                      parentCollapsed ? "-rotate-90" : ""
-                                    }`}
-                                    aria-hidden="true"
-                                  />
-                                </button>
-                              </span>
-                            ) : null}
-                            <button
-                              type="button"
-                              draggable={item.kind === "bot"}
-                              data-roster-bot-id={item.kind === "bot" ? item.chat.id : undefined}
-                              data-roster-unread={item.chat.unread ? "true" : undefined}
-                              data-roster-error={rowError && compact ? "true" : undefined}
-                              data-roster-depth={
-                                item.kind === "bot" && treeActive ? depth : undefined
-                              }
-                              aria-current={selected ? "page" : undefined}
-                              aria-keyshortcuts={
-                                item.kind === "bot" ? "Alt+ArrowUp Alt+ArrowDown" : undefined
-                              }
-                              onDragStart={(event) => {
-                                if (item.kind !== "bot") return;
-                                setDraggedBotId(item.chat.id);
-                                event.dataTransfer.effectAllowed = "move";
-                                event.dataTransfer.setData("text/plain", item.chat.id);
+                    <Collapsible open={!collapsed} className="contents">
+                      <CollapsibleContent className="flex flex-col gap-0.5">
+                        {nestedRows.map(({ item, depth, hasChildren, parentId }) => {
+                          const parentCollapsed =
+                            hasChildren && collapsedRosterParents.has(item.chat.id);
+                          const selected =
+                            (item.kind === "bot" && !inGroup && active?.id === item.chat.id) ||
+                            (item.kind === "group" && inGroup && activeGroup?.id === item.chat.id);
+                          const compact = botsSidebarDensity === "compact";
+                          const workStatusLabel =
+                            item.kind === "bot" ? rosterWorkStatusLabel(item.chat.status) : null;
+                          const rowError =
+                            item.kind === "bot" &&
+                            (rosterHasUndismissedRunError(
+                              item.chat.runErrorId,
+                              dismissedRunErrorIds,
+                            ) ||
+                              (active?.id === item.chat.id && Boolean(displayedRunError)));
+                          const compactStatusLabel =
+                            compact && item.kind === "bot"
+                              ? rowError
+                                ? t`Error`
+                                : compactRosterStatusLabel(item.chat.status)
+                              : null;
+                          const rosterLine = compact
+                            ? compactStatusLabel
+                            : (workStatusLabel ??
+                              (item.kind === "bot"
+                                ? item.chat.preview ||
+                                  (item.chat.status !== "idle" ? item.chat.status : "")
+                                : item.chat.preview ||
+                                  item.chat.members.map((member) => member.name).join(", ")));
+                          const rowDropTarget: RosterDropTarget | null =
+                            item.chat.spaceId !== bootstrapMe?.spaceId
+                              ? null
+                              : item.kind === "bot"
+                                ? { kind: "bot", chat: item.chat }
+                                : {
+                                    kind: "group",
+                                    chat: {
+                                      id: item.chat.id,
+                                      memberIds: item.chat.members.map((member) => member.botId),
+                                    },
+                                  };
+                          const rowSameParent =
+                            Boolean(draggedBotId) &&
+                            groupBotIds.includes(draggedBotId ?? "") &&
+                            rosterParent.get(draggedBotId ?? "") === parentId;
+                          const rowDropKey = `row:${item.kind}:${item.chat.id}`;
+                          return (
+                            <div
+                              key={`${item.kind}:${item.chat.id}`}
+                              className="group/row relative"
+                              style={{
+                                opacity:
+                                  item.kind === "bot" && draggedBotId === item.chat.id ? 0.55 : 1,
                               }}
-                              onDragOver={(event) => {
-                                if (
-                                  !rowDropTarget ||
-                                  !rosterDropAction(rowDropTarget, rowSameParent)
-                                )
-                                  return;
-                                event.preventDefault();
-                                event.dataTransfer.dropEffect = "move";
-                                if (rosterDropKey !== rowDropKey) setRosterDropKey(rowDropKey);
-                              }}
-                              onDragLeave={() => {
-                                if (rosterDropKey === rowDropKey) setRosterDropKey(null);
-                              }}
-                              onDrop={(event) => {
-                                if (!rowDropTarget) return;
-                                event.preventDefault();
-                                applyRosterDrop(rowDropTarget, rowSameParent, groupBotIds);
-                              }}
-                              onDragEnd={() => {
-                                setDraggedBotId(null);
-                                setRosterDropKey(null);
-                              }}
-                              data-roster-drop={rosterDropKey === rowDropKey ? "true" : undefined}
-                              onKeyDown={(event) => {
-                                if (
-                                  item.kind !== "bot" ||
-                                  !event.altKey ||
-                                  (event.key !== "ArrowUp" && event.key !== "ArrowDown")
-                                )
-                                  return;
-                                const siblings = siblingBotIds(parentId);
-                                const index = siblings.indexOf(item.chat.id);
-                                const target = siblings[index + (event.key === "ArrowUp" ? -1 : 1)];
-                                if (!target) return;
-                                event.preventDefault();
-                                reorderRosterBot(item.chat.id, target, groupBotIds);
-                              }}
-                              onClick={() => {
-                                openSpaceChat(
-                                  item.chat.spaceId,
-                                  item.kind === "bot"
-                                    ? `/app/${item.chat.id}`
-                                    : `/app/g/${item.chat.id}`,
-                                );
-                              }}
-                              onContextMenu={(event) => {
-                                if (item.chat.spaceId !== bootstrapMe?.spaceId) return;
-                                event.preventDefault();
-                                botMenuAnchor.current = event.currentTarget;
-                                setBotMenu({
-                                  kind: item.kind,
-                                  id: item.chat.id,
-                                  position: { x: event.clientX, y: event.clientY },
-                                });
-                              }}
-                              className={`flex w-full items-center ${
-                                compact
-                                  ? "min-h-11 gap-2 rounded-xl px-2.5 py-1.5"
-                                  : "gap-3 rounded-xl px-2.5 py-[10px]"
-                              } text-start ${
-                                item.kind === "bot" ? "cursor-grab active:cursor-grabbing" : ""
-                              } ${
-                                selected || rosterDropKey === rowDropKey
-                                  ? "bg-sidebar-accent"
-                                  : "group-hover/row:bg-sidebar-accent"
-                              }`}
-                              style={
-                                treeActive
-                                  ? { paddingInlineStart: `${24 + depth * 14}px` }
-                                  : undefined
-                              }
                             >
-                              {item.kind === "bot" ? (
-                                <BotAvatar
-                                  color={item.chat.color}
-                                  identity={item.chat.id}
-                                  size={compact ? 28 : 38}
-                                  status={item.chat.status}
-                                />
-                              ) : (
-                                <GroupAvatar
-                                  members={
-                                    item.chat.id === activeSnapshot?.groupId
-                                      ? (activeSnapshot.members ?? item.chat.members)
-                                      : item.chat.members
-                                  }
-                                  size={compact ? 28 : 38}
-                                />
-                              )}
-                              <div className="min-w-0 flex-1">
-                                <div className="flex items-center justify-between gap-1.5">
-                                  <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
-                                    <span
-                                      dir="auto"
-                                      data-roster-bot-name={item.kind === "bot" ? "" : undefined}
-                                      className={`min-w-0 truncate text-[14px] text-foreground ${
-                                        item.chat.unread ? "font-semibold" : "font-medium"
-                                      }`}
-                                    >
-                                      {item.chat.name}
-                                    </span>
-                                    {item.chat.unread ? (
-                                      <span className="sr-only">
-                                        <Trans> (unread)</Trans>
-                                      </span>
-                                    ) : null}
-                                  </div>
-                                  <div className="flex shrink-0 items-center gap-1.5">
-                                    {!compact ? (
-                                      <span className="text-[11.5px] text-muted-foreground/60 tabular-nums">
-                                        {formatRosterTime(item.chat.updatedAt)}
-                                      </span>
-                                    ) : null}
-                                    {item.chat.unread ? (
-                                      <span
-                                        aria-hidden="true"
-                                        className="inline-block h-2 w-2 rounded-full bg-foreground"
-                                      />
-                                    ) : null}
-                                  </div>
-                                </div>
-                                {!compact && item.kind === "bot" && item.chat.title ? (
-                                  <div className="mt-1 flex">
-                                    <span className="max-w-full truncate rounded-md border border-border bg-muted px-2 py-0.5 text-[11px] font-normal text-muted-foreground">
-                                      {item.chat.title}
-                                    </span>
-                                  </div>
-                                ) : null}
-                                {compact ? (
-                                  compactStatusLabel ? (
-                                    <div
-                                      dir="auto"
-                                      data-roster-status={
-                                        rowError
-                                          ? "error"
-                                          : item.kind === "bot"
-                                            ? item.chat.status
-                                            : undefined
-                                      }
-                                      className={`mt-0.5 flex items-center gap-1 text-[11.5px] ${
-                                        rowError
-                                          ? "font-medium text-destructive"
-                                          : workStatusLabel
-                                            ? "font-semibold text-status-working"
-                                            : "font-medium text-foreground/75"
-                                      }`}
-                                    >
-                                      {rowError ? (
-                                        <CircleAlert size={12} aria-hidden="true" />
-                                      ) : null}
-                                      <span>{compactStatusLabel}</span>
-                                    </div>
-                                  ) : null
-                                ) : (
-                                  <div
-                                    dir="auto"
-                                    data-roster-preview={!workStatusLabel ? "true" : undefined}
-                                    className={`mt-1 line-clamp-2 text-[12.5px] break-words whitespace-normal ${
-                                      workStatusLabel
-                                        ? "font-semibold text-status-working"
-                                        : item.chat.unread
-                                          ? "font-medium text-foreground/75"
-                                          : "text-muted-foreground/60"
-                                    }`}
+                              {hasChildren ? (
+                                <span
+                                  className="absolute inset-y-0 z-10 flex w-3.5 items-center justify-center"
+                                  style={{ insetInlineStart: `${10 + depth * 14}px` }}
+                                >
+                                  <button
+                                    type="button"
+                                    aria-expanded={!parentCollapsed}
+                                    aria-label={
+                                      parentCollapsed
+                                        ? t`Expand ${item.chat.name}`
+                                        : t`Collapse ${item.chat.name}`
+                                    }
+                                    className="inline-flex size-3.5 items-center justify-center rounded-sm text-muted-foreground hover:text-foreground"
+                                    onClick={() => toggleRosterParent(item.chat.id)}
                                   >
-                                    {rosterLine}
+                                    <ChevronDown
+                                      size={12}
+                                      strokeWidth={2}
+                                      className={`transition-transform ${
+                                        parentCollapsed ? "-rotate-90" : ""
+                                      }`}
+                                      aria-hidden="true"
+                                    />
+                                  </button>
+                                </span>
+                              ) : null}
+                              <ContextMenu
+                                disabled={item.chat.spaceId !== bootstrapMe?.spaceId}
+                                open={botMenu?.kind === item.kind && botMenu.id === item.chat.id}
+                                // A sibling row's menu may already own the state; only clear our own.
+                                onOpenChange={(open) =>
+                                  setBotMenu((current) =>
+                                    open
+                                      ? { kind: item.kind, id: item.chat.id }
+                                      : current?.kind === item.kind && current.id === item.chat.id
+                                        ? null
+                                        : current,
+                                  )
+                                }
+                              >
+                                <ContextMenuTrigger
+                                  render={<button type="button" />}
+                                  draggable={item.kind === "bot"}
+                                  data-roster-bot-id={
+                                    item.kind === "bot" ? item.chat.id : undefined
+                                  }
+                                  data-roster-unread={item.chat.unread ? "true" : undefined}
+                                  data-roster-error={rowError && compact ? "true" : undefined}
+                                  data-roster-depth={
+                                    item.kind === "bot" && treeActive ? depth : undefined
+                                  }
+                                  aria-current={selected ? "page" : undefined}
+                                  aria-keyshortcuts={
+                                    item.kind === "bot" ? "Alt+ArrowUp Alt+ArrowDown" : undefined
+                                  }
+                                  onDragStart={(event) => {
+                                    if (item.kind !== "bot") return;
+                                    setDraggedBotId(item.chat.id);
+                                    event.dataTransfer.effectAllowed = "move";
+                                    event.dataTransfer.setData("text/plain", item.chat.id);
+                                  }}
+                                  onDragOver={(event) => {
+                                    if (
+                                      !rowDropTarget ||
+                                      !rosterDropAction(rowDropTarget, rowSameParent)
+                                    )
+                                      return;
+                                    event.preventDefault();
+                                    event.dataTransfer.dropEffect = "move";
+                                    if (rosterDropKey !== rowDropKey) setRosterDropKey(rowDropKey);
+                                  }}
+                                  onDragLeave={() => {
+                                    if (rosterDropKey === rowDropKey) setRosterDropKey(null);
+                                  }}
+                                  onDrop={(event) => {
+                                    if (!rowDropTarget) return;
+                                    event.preventDefault();
+                                    applyRosterDrop(rowDropTarget, rowSameParent, groupBotIds);
+                                  }}
+                                  onDragEnd={() => {
+                                    setDraggedBotId(null);
+                                    setRosterDropKey(null);
+                                  }}
+                                  data-roster-drop={
+                                    rosterDropKey === rowDropKey ? "true" : undefined
+                                  }
+                                  onKeyDown={(event) => {
+                                    if (
+                                      item.kind !== "bot" ||
+                                      !event.altKey ||
+                                      (event.key !== "ArrowUp" && event.key !== "ArrowDown")
+                                    )
+                                      return;
+                                    const siblings = siblingBotIds(parentId);
+                                    const index = siblings.indexOf(item.chat.id);
+                                    const target =
+                                      siblings[index + (event.key === "ArrowUp" ? -1 : 1)];
+                                    if (!target) return;
+                                    event.preventDefault();
+                                    reorderRosterBot(item.chat.id, target, groupBotIds);
+                                  }}
+                                  onClick={() => {
+                                    openSpaceChat(
+                                      item.chat.spaceId,
+                                      item.kind === "bot"
+                                        ? `/app/${item.chat.id}`
+                                        : `/app/g/${item.chat.id}`,
+                                    );
+                                  }}
+                                  // Focus the row so closing the menu returns focus here.
+                                  onContextMenu={(event) => event.currentTarget.focus()}
+                                  className={`flex w-full items-center ${
+                                    compact
+                                      ? "min-h-11 gap-2 rounded-xl px-2.5 py-1.5"
+                                      : "gap-3 rounded-xl px-2.5 py-[10px]"
+                                  } text-start ${
+                                    item.kind === "bot" ? "cursor-grab active:cursor-grabbing" : ""
+                                  } ${
+                                    selected || rosterDropKey === rowDropKey
+                                      ? "bg-sidebar-accent"
+                                      : "group-hover/row:bg-sidebar-accent"
+                                  }`}
+                                  style={
+                                    treeActive
+                                      ? { paddingInlineStart: `${24 + depth * 14}px` }
+                                      : undefined
+                                  }
+                                >
+                                  {item.kind === "bot" ? (
+                                    <BotAvatar
+                                      color={item.chat.color}
+                                      identity={item.chat.id}
+                                      size={compact ? 28 : 38}
+                                      status={item.chat.status}
+                                    />
+                                  ) : (
+                                    <GroupAvatar
+                                      members={
+                                        item.chat.id === activeSnapshot?.groupId
+                                          ? (activeSnapshot.members ?? item.chat.members)
+                                          : item.chat.members
+                                      }
+                                      size={compact ? 28 : 38}
+                                    />
+                                  )}
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex items-center justify-between gap-1.5">
+                                      <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
+                                        <span
+                                          dir="auto"
+                                          data-roster-bot-name={
+                                            item.kind === "bot" ? "" : undefined
+                                          }
+                                          className={`min-w-0 truncate text-[14px] text-foreground ${
+                                            item.chat.unread ? "font-semibold" : "font-medium"
+                                          }`}
+                                        >
+                                          {item.chat.name}
+                                        </span>
+                                        {item.chat.unread ? (
+                                          <span className="sr-only">
+                                            <Trans> (unread)</Trans>
+                                          </span>
+                                        ) : null}
+                                      </div>
+                                      <div className="flex shrink-0 items-center gap-1.5">
+                                        {!compact ? (
+                                          <span className="text-[11.5px] text-muted-foreground/60 tabular-nums">
+                                            {formatRosterTime(item.chat.updatedAt)}
+                                          </span>
+                                        ) : null}
+                                        {item.chat.unread ? (
+                                          <span
+                                            aria-hidden="true"
+                                            className="inline-block h-2 w-2 rounded-full bg-foreground"
+                                          />
+                                        ) : null}
+                                      </div>
+                                    </div>
+                                    {!compact && item.kind === "bot" && item.chat.title ? (
+                                      <div className="mt-1 flex">
+                                        <span className="max-w-full truncate rounded-md border border-border bg-muted px-2 py-0.5 text-[11px] font-normal text-muted-foreground">
+                                          {item.chat.title}
+                                        </span>
+                                      </div>
+                                    ) : null}
+                                    {compact ? (
+                                      compactStatusLabel ? (
+                                        <div
+                                          dir="auto"
+                                          data-roster-status={
+                                            rowError
+                                              ? "error"
+                                              : item.kind === "bot"
+                                                ? item.chat.status
+                                                : undefined
+                                          }
+                                          className={`mt-0.5 flex items-center gap-1 text-[11.5px] ${
+                                            rowError
+                                              ? "font-medium text-destructive"
+                                              : workStatusLabel
+                                                ? "font-semibold text-status-working"
+                                                : "font-medium text-foreground/75"
+                                          }`}
+                                        >
+                                          {rowError ? (
+                                            <CircleAlert size={12} aria-hidden="true" />
+                                          ) : null}
+                                          <span>{compactStatusLabel}</span>
+                                        </div>
+                                      ) : null
+                                    ) : (
+                                      <div
+                                        dir="auto"
+                                        data-roster-preview={!workStatusLabel ? "true" : undefined}
+                                        className={`mt-1 line-clamp-2 text-[12.5px] break-words whitespace-normal ${
+                                          workStatusLabel
+                                            ? "font-semibold text-status-working"
+                                            : item.chat.unread
+                                              ? "font-medium text-foreground/75"
+                                              : "text-muted-foreground/60"
+                                        }`}
+                                      >
+                                        {rosterLine}
+                                      </div>
+                                    )}
                                   </div>
-                                )}
-                              </div>
-                            </button>
-                          </div>
-                        );
-                      })}
+                                </ContextMenuTrigger>
+                                {botMenu?.kind === item.kind && botMenu.id === item.chat.id ? (
+                                  <Suspense fallback={null}>{botMenuContent}</Suspense>
+                                ) : null}
+                              </ContextMenu>
+                            </div>
+                          );
+                        })}
+                      </CollapsibleContent>
+                    </Collapsible>
                   </div>
                 );
               })}
@@ -3705,8 +3849,8 @@ function SpaceShell() {
                 </span>
                 <span>{archivedBots.length + archivedGroups.length}</span>
               </button>
-              {archivedOpen ? (
-                <>
+              <Collapsible open={archivedOpen} className="contents">
+                <CollapsibleContent className="flex flex-col">
                   {archivedBots.map((bot) => (
                     <div key={bot.id} className="flex items-center gap-2 rounded-lg px-2.5 py-2">
                       <BotAvatar
@@ -3772,11 +3916,12 @@ function SpaceShell() {
                       </Button>
                     </div>
                   ))}
-                </>
-              ) : null}
+                </CollapsibleContent>
+              </Collapsible>
             </div>
           ) : null}
         </div>
+        <PasskeyOffer />
         <SidebarFooter
           logos={footerLogos}
           name={userName}
@@ -3894,16 +4039,17 @@ function SpaceShell() {
               <Menu size={19} strokeWidth={1.7} />
             </button>
             {botsSidebarCollapsed ? (
-              <button
-                type="button"
-                data-testid="restore-bots-sidebar"
-                aria-label={t`Show bots`}
-                title={t`Show bots`}
-                onClick={() => setBotsSidebarCollapsedPref(false)}
-                className="app-no-drag hidden h-8 w-8 shrink-0 place-items-center rounded-lg text-foreground/75 hover:bg-accent md:grid"
-              >
-                <PanelLeftOpen size={19} strokeWidth={1.7} aria-hidden="true" />
-              </button>
+              <IconTooltip label={t`Show bots`}>
+                <button
+                  type="button"
+                  data-testid="restore-bots-sidebar"
+                  aria-label={t`Show bots`}
+                  onClick={() => setBotsSidebarCollapsedPref(false)}
+                  className="app-no-drag hidden h-8 w-8 shrink-0 place-items-center rounded-lg text-foreground/75 hover:bg-accent md:grid"
+                >
+                  <PanelLeftOpen size={19} strokeWidth={1.7} aria-hidden="true" />
+                </button>
+              </IconTooltip>
             ) : null}
             <button
               type="button"
@@ -3935,43 +4081,45 @@ function SpaceShell() {
           </div>
           <div className="flex items-center gap-1">
             {bootstrapMe?.phoneCallsEnabled && !inGroup && active ? (
-              <button
-                type="button"
-                data-testid="call-button"
-                aria-label={call?.botId === active.id ? t`Open call` : t`Call`}
-                title={call?.botId === active.id ? t`Open call` : t`Call`}
-                onClick={() => {
-                  if (call?.botId === active.id) {
-                    setCallMinimized(false);
-                    return;
-                  }
-                  callBot(active);
-                }}
-                data-active={call?.botId === active.id ? "" : undefined}
-                className="app-no-drag grid h-[30px] w-[34px] place-items-center rounded-[9px] hover:bg-accent data-active:bg-accent"
-              >
-                <Phone size={17} strokeWidth={1.6} className="text-foreground/75" />
-              </button>
+              <IconTooltip label={call?.botId === active.id ? t`Open call` : t`Call`}>
+                <button
+                  type="button"
+                  data-testid="call-button"
+                  aria-label={call?.botId === active.id ? t`Open call` : t`Call`}
+                  onClick={() => {
+                    if (call?.botId === active.id) {
+                      setCallMinimized(false);
+                      return;
+                    }
+                    callBot(active);
+                  }}
+                  data-active={call?.botId === active.id ? "" : undefined}
+                  className="app-no-drag grid h-[30px] w-[34px] place-items-center rounded-[9px] hover:bg-accent data-active:bg-accent"
+                >
+                  <Phone size={17} strokeWidth={1.6} className="text-foreground/75" />
+                </button>
+              </IconTooltip>
             ) : null}
             {!inGroup && active ? (
-              <button
-                type="button"
-                aria-label={t`Agent computer`}
-                aria-pressed={panel === "computer"}
-                title={t`Agent computer`}
-                onClick={() => {
-                  const next = panel === "computer" ? null : "computer";
-                  setPanel(next);
-                  if (next === "computer" && active) {
-                    // Refresh run/computer so Take control isn't stuck on a stale busyBotName.
-                    void refreshThread(active.id).catch(() => undefined);
-                  }
-                }}
-                data-active={panel === "computer" ? "" : undefined}
-                className="app-no-drag grid h-[30px] w-[34px] place-items-center rounded-[9px] hover:bg-accent data-active:bg-accent"
-              >
-                <Monitor size={18} strokeWidth={1.6} className="text-foreground/75" />
-              </button>
+              <IconTooltip label={t`Agent computer`}>
+                <button
+                  type="button"
+                  aria-label={t`Agent computer`}
+                  aria-pressed={panel === "computer"}
+                  onClick={() => {
+                    const next = panel === "computer" ? null : "computer";
+                    setPanel(next);
+                    if (next === "computer" && active) {
+                      // Refresh run/computer so Take control isn't stuck on a stale busyBotName.
+                      void refreshThread(active.id).catch(() => undefined);
+                    }
+                  }}
+                  data-active={panel === "computer" ? "" : undefined}
+                  className="app-no-drag grid h-[30px] w-[34px] place-items-center rounded-[9px] hover:bg-accent data-active:bg-accent"
+                >
+                  <Monitor size={18} strokeWidth={1.6} className="text-foreground/75" />
+                </button>
+              </IconTooltip>
             ) : null}
           </div>
         </div>
@@ -3995,6 +4143,7 @@ function SpaceShell() {
             olderCursor={activeSnapshot?.olderCursor ?? null}
             loadingOlder={loadingOlder}
             answerableAskIds={answerableAskIds}
+            dismissableAskIds={dismissableAskIds}
             running={transcriptRunning}
             workingBots={workingBots}
             onCallBack={
@@ -4509,116 +4658,6 @@ function SpaceShell() {
       </ResizableSidePanel>
 
       <Suspense fallback={null}>
-        {contextChat && botMenu ? (
-          <BotContextMenu
-            bot={contextChat}
-            position={botMenu.position}
-            onClose={closeBotMenu}
-            sections={botSections}
-            onTogglePinned={() => {
-              setBotMenu(null);
-              const request = contextBot
-                ? rpc.bots.update({ botId: contextBot.id, pinned: !contextBot.pinned })
-                : rpc.groups.update({
-                    groupId: contextGroup!.id,
-                    pinned: !contextGroup!.pinned,
-                  });
-              void request.then(() => refreshBots());
-            }}
-            onToggleUnread={() => {
-              const unread = !contextChat.unread;
-              setBotMenu(null);
-              if (contextBot) {
-                const request = unread ? markBotUnread(contextBot.id) : markBotRead(contextBot.id);
-                void request.catch(() => undefined);
-              } else {
-                const request = unread
-                  ? rpc.threads.markUnread({ groupId: contextGroup!.id })
-                  : rpc.threads.markRead({ groupId: contextGroup!.id });
-                void request
-                  .then(() =>
-                    setGroups((current) =>
-                      current.map((group) =>
-                        group.id === contextGroup!.id ? { ...group, unread } : group,
-                      ),
-                    ),
-                  )
-                  .catch(() => undefined);
-              }
-            }}
-            onMoveToSection={(sectionId) => {
-              setBotMenu(null);
-              if (sectionId === contextChat.sectionId) return;
-              const request = contextBot
-                ? rpc.bots.update({ botId: contextBot.id, sectionId })
-                : rpc.groups.update({ groupId: contextGroup!.id, sectionId });
-              void request.then(() => refreshBots());
-            }}
-            onCreateSection={() => {
-              setNewSectionTarget(
-                contextBot
-                  ? { kind: "bot", chat: contextBot }
-                  : { kind: "group", chat: contextGroup! },
-              );
-              setBotMenu(null);
-            }}
-            onRenameSection={(sectionId) => {
-              const section = botSections.find((item) => item.id === sectionId);
-              const spaceId = bootstrapMe?.spaceId;
-              if (section && spaceId) setRenameSectionTarget({ section, spaceId });
-              setBotMenu(null);
-            }}
-            onEdit={() => {
-              const destKey =
-                userId && bootstrapMe?.spaceId
-                  ? rightPanelStorageKey(
-                      userId,
-                      bootstrapMe.spaceId,
-                      contextBot ? "bot" : "group",
-                      contextChat.id,
-                    )
-                  : null;
-              explicitPanelTarget.current = destKey;
-              pendingPanelRestore.current = null;
-              navigate(contextBot ? `/app/${contextBot.id}` : `/app/g/${contextGroup!.id}`);
-              // Mark the destination key restored so we do not write settings onto the source chat.
-              setPanelState(contextBot ? "settings" : "group-settings");
-              setRestoredPanelKey(destKey);
-              setBotMenu(null);
-            }}
-            onDuplicate={() => {
-              setBotMenu(null);
-              const request = contextBot
-                ? rpc.bots.duplicate({ botId: contextBot.id })
-                : rpc.groups.duplicate({ groupId: contextGroup!.id });
-              void request.then(async (chat) => {
-                await refreshBots();
-                navigate(contextBot ? `/app/${chat.id}` : `/app/g/${chat.id}`);
-              });
-            }}
-            onClear={() => {
-              setClearTarget(
-                contextBot
-                  ? { kind: "bot", chat: contextBot }
-                  : { kind: "group", chat: contextGroup! },
-              );
-              setBotMenu(null);
-            }}
-            onArchive={() => {
-              setBotMenu(null);
-              const request = contextBot
-                ? rpc.bots.archive({ botId: contextBot.id })
-                : rpc.groups.archive({ groupId: contextGroup!.id });
-              void request.then(() => refreshBots(true));
-            }}
-            onDelete={() => {
-              if (contextBot) setDeleteTarget(contextBot);
-              else setDeleteGroupTarget(contextGroup!);
-              setBotMenu(null);
-            }}
-          />
-        ) : null}
-
         {spaceMenu ? (
           <DropdownMenu
             open
@@ -4807,59 +4846,6 @@ function SpaceShell() {
               await refreshBots();
             }}
           />
-        ) : null}
-
-        {sectionMenu ? (
-          <DropdownMenu
-            open
-            onOpenChange={(open) => {
-              if (!open) closeSectionMenu();
-            }}
-          >
-            <DropdownMenuTrigger
-              render={
-                <button
-                  type="button"
-                  tabIndex={-1}
-                  aria-hidden
-                  className="fixed size-0 p-0 opacity-0"
-                  style={{ left: sectionMenu.position.x, top: sectionMenu.position.y }}
-                />
-              }
-            />
-            <DropdownMenuContent
-              aria-label={t`Actions for ${sectionMenu.section.name}`}
-              align="start"
-              sideOffset={0}
-              className="w-[220px]"
-            >
-              <DropdownMenuItem
-                onClick={() => {
-                  setRenameSectionTarget({
-                    section: sectionMenu.section,
-                    spaceId: sectionMenu.spaceId,
-                  });
-                  setSectionMenu(null);
-                }}
-              >
-                <Pencil />
-                {t`Rename section`}
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                variant="destructive"
-                onClick={() => {
-                  setDeleteSectionTarget({
-                    section: sectionMenu.section,
-                    spaceId: sectionMenu.spaceId,
-                  });
-                  setSectionMenu(null);
-                }}
-              >
-                <Trash2 />
-                {t`Delete section`}
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
         ) : null}
 
         <CommandPalette
@@ -5205,6 +5191,7 @@ const Transcript = memo(function Transcript({
   olderCursor,
   loadingOlder,
   answerableAskIds,
+  dismissableAskIds,
   running,
   workingBots,
   onCallBack,
@@ -5235,13 +5222,19 @@ const Transcript = memo(function Transcript({
   olderCursor: number | null;
   loadingOlder: boolean;
   answerableAskIds: Set<string>;
+  dismissableAskIds: Set<string>;
   running: boolean;
   workingBots: GroupAvatarMember[];
   /** Calls the bot back from a missed call in the transcript. */
   onCallBack?: () => void;
   onLoadOlder: () => void | Promise<void>;
   onOpenBot: (botId: string) => void;
-  onAnswer: (message: ThreadMessage, text: string, username?: string) => Promise<void>;
+  onAnswer: (
+    message: ThreadMessage,
+    text: string,
+    username?: string,
+    dismiss?: boolean,
+  ) => Promise<void>;
   onReply: (message: ThreadMessage) => void;
   onQuote: (message: ThreadMessage, quote: string) => void;
   onReact: (message: ThreadMessage, reaction: MessageReaction) => Promise<void>;
@@ -5613,6 +5606,7 @@ const Transcript = memo(function Transcript({
                       artifactTarget={artifactTarget}
                       message={message}
                       canAnswer={answerableAskIds.has(message.id)}
+                      canDismiss={dismissableAskIds.has(message.id)}
                       onOpenBot={onOpenBot}
                       onOpenPeerMessages={onOpenPeerMessages}
                       peerReplies={
@@ -5647,40 +5641,11 @@ const Transcript = memo(function Transcript({
                       onSpeak={() => onSpeak(message)}
                       onOpenComputer={onOpenComputer}
                       showToolActivity={showToolActivity}
+                      onReply={onReply}
+                      onReact={onReact}
                     />
-                    {peerReceipt ? null : (
-                      <MessageHoverActions
-                        message={message}
-                        side={message.role === "user" ? "start" : "end"}
-                        onReply={onReply}
-                        onReact={onReact}
-                      />
-                    )}
                   </div>
                 </div>
-                {!peerReceipt && !message.id.startsWith("progress:") ? (
-                  <time
-                    dateTime={message.createdAt}
-                    data-testid="message-hover-time"
-                    className={cn(
-                      "pointer-events-none absolute top-1 z-10 text-xs tabular-nums text-muted-foreground opacity-0 transition-opacity group-hover/message:opacity-100 group-focus-within/message:opacity-100 group-has-[[aria-expanded=true]]/message:opacity-100 [@media(hover:none)]:transition-none",
-                      // Hover keeps the date in the side margin. Touch leaves that margin for the bubble and drops the revealed time under it.
-                      message.role === "user"
-                        ? "start-0 max-w-[max(8rem,16%)] text-start"
-                        : "end-0 max-w-[max(8rem,12%)] text-end",
-                      "[@media(hover:none)]:group-hover/message:static [@media(hover:none)]:group-focus-within/message:static [@media(hover:none)]:group-has-[[aria-expanded=true]]/message:static",
-                      "[@media(hover:none)]:group-hover/message:block [@media(hover:none)]:group-focus-within/message:block [@media(hover:none)]:group-has-[[aria-expanded=true]]/message:block",
-                      "[@media(hover:none)]:group-hover/message:mt-1 [@media(hover:none)]:group-focus-within/message:mt-1 [@media(hover:none)]:group-has-[[aria-expanded=true]]/message:mt-1",
-                      "[@media(hover:none)]:group-hover/message:w-full [@media(hover:none)]:group-focus-within/message:w-full [@media(hover:none)]:group-has-[[aria-expanded=true]]/message:w-full",
-                      "[@media(hover:none)]:group-hover/message:max-w-none [@media(hover:none)]:group-focus-within/message:max-w-none [@media(hover:none)]:group-has-[[aria-expanded=true]]/message:max-w-none",
-                      message.role === "user"
-                        ? "[@media(hover:none)]:group-hover/message:text-end [@media(hover:none)]:group-focus-within/message:text-end [@media(hover:none)]:group-has-[[aria-expanded=true]]/message:text-end"
-                        : "[@media(hover:none)]:group-hover/message:text-start [@media(hover:none)]:group-focus-within/message:text-start [@media(hover:none)]:group-has-[[aria-expanded=true]]/message:text-start",
-                    )}
-                  >
-                    {formatMessageTime(message.createdAt, i18n.locale || "en")}
-                  </time>
-                ) : null}
                 {!peerReceipt && messageReactions ? (
                   <div
                     data-testid="message-reactions"
@@ -6364,7 +6329,7 @@ export const Composer = memo(function Composer({
           ref={runErrorRef}
           role="alert"
           data-testid="composer-error"
-          className="mb-3 flex items-center gap-2 rounded-[14px] border border-destructive/40 bg-destructive/10 px-4 py-2 text-[13px] text-destructive"
+          className="mb-3 flex items-center gap-2 rounded-[14px] border border-destructive/40 bg-destructive/10 px-4 py-2 text-[13px] text-destructive animate-in fade-in-0 slide-in-from-bottom-1 duration-150 motion-reduce:animate-none"
         >
           <div className="min-w-0 flex-1">
             {sendError === MODEL_REQUIRED_SEND_ERROR ? (
@@ -6464,7 +6429,7 @@ export const Composer = memo(function Composer({
           role="listbox"
           aria-label={t`Mentions`}
           data-testid="mention-picker"
-          className="mb-2 overflow-hidden rounded-[14px] border border-border bg-muted"
+          className="mb-2 overflow-hidden rounded-[14px] border border-border bg-muted animate-in fade-in-0 slide-in-from-bottom-1 duration-150 motion-reduce:animate-none"
         >
           {mentionOptions.map((mention, index) => {
             const optionId = `${mentionListboxId}-option-${index}`;
@@ -7033,6 +6998,7 @@ function ComputerReleaseActions({
 const MessageView = memo(function MessageView({
   artifactTarget,
   canAnswer,
+  canDismiss,
   message,
   onAnswer,
   onOpenBot,
@@ -7052,11 +7018,19 @@ const MessageView = memo(function MessageView({
   onSpeak,
   onOpenComputer,
   showToolActivity,
+  onReply,
+  onReact,
 }: {
   artifactTarget: ArtifactTarget;
   canAnswer: boolean;
+  canDismiss: boolean;
   message: ThreadMessage;
-  onAnswer: (message: ThreadMessage, text: string, username?: string) => Promise<void>;
+  onAnswer: (
+    message: ThreadMessage,
+    text: string,
+    username?: string,
+    dismiss?: boolean,
+  ) => Promise<void>;
   onOpenBot: (botId: string) => void;
   onOpenPeerMessages: (peer: { peerBotId: string; peerBotName: string }) => void;
   /** Set on a received marker whose peer run has folded replies. */
@@ -7075,6 +7049,8 @@ const MessageView = memo(function MessageView({
   onSpeak: () => void;
   onOpenComputer: (botId?: string) => void;
   showToolActivity: boolean;
+  onReply: (message: ThreadMessage) => void;
+  onReact: (message: ThreadMessage, reaction: MessageReaction) => Promise<void>;
 }) {
   const { t } = useLingui();
   const isNarration =
@@ -7124,65 +7100,84 @@ const MessageView = memo(function MessageView({
       />
     </>
   );
+  // Anchored below the speaker and reply line so the rail centers on the bubble itself.
+  // A message with text and attachments anchors it on its first text bubble.
+  const hoverAnchorIndex = message.blocks.findIndex((block) => block.kind === "text");
+  const hoverActions = isPeerReceiptBlocks(message.blocks) ? null : (
+    <MessageHoverActions
+      message={message}
+      side={message.role === "user" ? "start" : "end"}
+      onReply={onReply}
+      onReact={onReact}
+    />
+  );
   if (isNarration) {
     if (visibleNarrationBlocks.length === 0) return null;
     if (isToolOnlyNarration(message.blocks, showToolActivity)) {
       return (
         <>
           {messageContext}
-          <ToolOnlyNarration blocks={visibleNarrationBlocks} live={isLive} />
+          <div className="relative">
+            <ToolOnlyNarration blocks={visibleNarrationBlocks} live={isLive} />
+            {hoverActions}
+          </div>
         </>
       );
     }
     return (
       <>
         {messageContext}
-        <div className="flex w-fit max-w-full justify-start [@media(hover:none)]:w-full">
-          <div
-            data-testid="message-bot-bubble"
-            className="max-w-full space-y-2.5 rounded-[20px] bg-muted px-[18px] py-3 text-[15.5px] leading-[1.5] text-foreground/90"
-            dir="auto"
-          >
-            {visibleNarrationBlocks.map((block, i) => {
-              if (block.kind === "steps") {
-                return (
-                  <ToolActivityDisclosure
-                    key={i}
-                    live={isLive}
-                    stepCount={toolStepCount(block.steps)}
-                    durationMs={block.durationMs}
-                  >
-                    <ToolSteps
-                      steps={block.steps}
-                      currentIndex={isLive ? block.steps.length - 1 : undefined}
-                      limit={isLive ? LIVE_TOOL_STEP_WINDOW : undefined}
-                    />
-                  </ToolActivityDisclosure>
-                );
-              }
-              if (block.kind === "text" || block.kind === "progress") {
-                return (
-                  <div
-                    key={i}
-                    data-quote-message-id={block.kind === "text" ? quoteMessageId : undefined}
-                  >
-                    <ChatMarkdown streaming={block.kind === "progress"}>{block.text}</ChatMarkdown>
-                  </div>
-                );
-              }
-              return null;
-            })}
-            {!isLive && voiceReady && message.blocks.some((block) => block.kind === "text") ? (
-              <button
-                type="button"
-                aria-label={speaking ? t`Stop speaking` : t`Speak this reply`}
-                onClick={onSpeak}
-                className="text-[12px] text-muted-foreground hover:text-foreground"
-              >
-                {speaking ? <Trans>Stop</Trans> : <Trans>Speak</Trans>}
-              </button>
-            ) : null}
+        <div className="relative w-fit max-w-full [@media(hover:none)]:w-full">
+          <div className="flex w-fit max-w-full justify-start [@media(hover:none)]:w-full">
+            <div
+              data-testid="message-bot-bubble"
+              className="max-w-full space-y-2.5 rounded-[20px] bg-muted px-[18px] py-3 text-[15.5px] leading-[1.5] text-foreground/90"
+              dir="auto"
+            >
+              {visibleNarrationBlocks.map((block, i) => {
+                if (block.kind === "steps") {
+                  return (
+                    <ToolActivityDisclosure
+                      key={i}
+                      live={isLive}
+                      stepCount={toolStepCount(block.steps)}
+                      durationMs={block.durationMs}
+                    >
+                      <ToolSteps
+                        steps={block.steps}
+                        currentIndex={isLive ? block.steps.length - 1 : undefined}
+                        limit={isLive ? LIVE_TOOL_STEP_WINDOW : undefined}
+                      />
+                    </ToolActivityDisclosure>
+                  );
+                }
+                if (block.kind === "text" || block.kind === "progress") {
+                  return (
+                    <div
+                      key={i}
+                      data-quote-message-id={block.kind === "text" ? quoteMessageId : undefined}
+                    >
+                      <ChatMarkdown streaming={block.kind === "progress"}>
+                        {block.text}
+                      </ChatMarkdown>
+                    </div>
+                  );
+                }
+                return null;
+              })}
+              {!isLive && voiceReady && message.blocks.some((block) => block.kind === "text") ? (
+                <button
+                  type="button"
+                  aria-label={speaking ? t`Stop speaking` : t`Speak this reply`}
+                  onClick={onSpeak}
+                  className="text-[12px] text-muted-foreground hover:text-foreground"
+                >
+                  {speaking ? <Trans>Stop</Trans> : <Trans>Speak</Trans>}
+                </button>
+              ) : null}
+            </div>
           </div>
+          {hoverActions}
         </div>
       </>
     );
@@ -7190,353 +7185,364 @@ const MessageView = memo(function MessageView({
   return (
     <>
       {messageContext}
-      {message.blocks.map((block, i) => {
-        if (block.kind === "steps" && shouldRenderToolCard(block, showToolActivity)) {
-          return (
-            <StandaloneToolActivity
-              key={i}
-              live={isLive}
-              steps={block.steps}
-              stepCount={toolStepCount(block.steps)}
-              durationMs={block.durationMs}
-            />
-          );
-        }
-        if (isToolActivityBlock(block)) return null;
-        if (block.kind === "handoff") {
-          const from = memberName?.(block.fromBotId) ?? t`bot`;
-          const to = memberName?.(block.toBotId) ?? t`bot`;
-          return (
-            <div
-              key={i}
-              className="flex items-center justify-center gap-2 py-1 text-[13.5px] text-muted-foreground"
-            >
-              <span>
-                ↪ {to} ← {from}
-              </span>
-              <span>{block.text}</span>
-            </div>
-          );
-        }
-        if (block.kind === "bot_message_sent" || block.kind === "bot_message_received") {
-          const sent = block.kind === "bot_message_sent";
-          const peer = sent ? block.toBotName : block.fromBotName;
-          const peerBotId = sent ? block.toBotId : block.fromBotId;
-          const label = sent ? t`Messaged ${peer}` : t`Message from ${peer}`;
-          return (
-            <CollaborationMarker
-              key={i}
-              ariaLabel={label}
-              color={peerBot(peerBotId)?.color ?? FALLBACK_BOT_COLOR}
-              identity={peerBotId}
-              label={label}
-              onClick={() => onOpenPeerMessages({ peerBotId, peerBotName: peer })}
-              replies={
-                !sent && peerReplies
-                  ? {
-                      expanded: peerReplies === "expanded",
-                      label: peerReplies === "expanded" ? t`Collapse ${label}` : t`Expand ${label}`,
-                      onToggle: () => onTogglePeerReplies(message.id),
-                    }
-                  : undefined
-              }
-            />
-          );
-        }
-        if (block.kind === "channel_message") {
-          return (
-            <div
-              key={i}
-              className="flex items-center justify-center gap-2 py-1 text-[13.5px] text-muted-foreground"
-            >
-              <span>
-                {messageProviderLabel(block.provider, block.transport)} · {block.fromLabel}:{" "}
-                {block.text}
-              </span>
-            </div>
-          );
-        }
-        if (block.kind === "meta") {
-          return (
-            <div
-              key={i}
-              className="flex items-center justify-center gap-2 py-1 text-[13.5px] text-muted-foreground"
-            >
-              <span className="text-warning">◷</span>
-              <span>{block.text}</span>
-            </div>
-          );
-        }
-        if (block.kind === "progress") {
-          return (
-            <div
-              key={i}
-              className="flex w-fit max-w-full justify-start [@media(hover:none)]:w-full"
-            >
-              <div
-                data-testid="message-bot-bubble"
-                className="max-w-full rounded-[20px] bg-muted px-[18px] py-3 text-[15.5px] leading-[1.5] text-foreground/90"
-                dir="auto"
-              >
-                <ChatMarkdown streaming>{block.text}</ChatMarkdown>
-              </div>
-            </div>
-          );
-        }
-        if (block.kind === "subagent") {
-          const running = block.status === "running";
-          const failed = block.status === "failed";
-          return (
-            <div
-              key={i}
-              className="w-[min(420px,90%)] rounded-[18px] border border-border bg-muted px-[18px] py-4"
-            >
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-[15px] font-medium text-foreground" dir="auto">
-                  {block.name}
-                </span>
-                <span
-                  className={`rounded-full px-[11px] py-1 text-[13px] ${
-                    failed
-                      ? "bg-destructive/15 text-destructive"
-                      : running
-                        ? "bg-warning/15 text-warning"
-                        : "bg-success/15 text-success"
-                  }`}
-                  style={{
-                    animation: running ? "rkPulse 1.2s ease-in-out infinite" : undefined,
-                  }}
-                >
-                  {running ? <Trans>subagent</Trans> : block.status}
-                </span>
-              </div>
-              <div className="mt-2 text-[13.5px] text-muted-foreground">{block.task}</div>
-              {block.progress || block.result ? (
-                <div className="mt-2.5 text-[14.5px] leading-[1.5] text-foreground/75">
-                  <ChatMarkdown streaming={running}>
-                    {block.result || block.progress || ""}
-                  </ChatMarkdown>
-                </div>
-              ) : null}
-            </div>
-          );
-        }
-        if (block.kind === "child_bot") {
-          const removed = block.status === "deleted" || block.status === "archived";
-          return (
-            <button
-              key={i}
-              type="button"
-              disabled={removed}
-              onClick={() => onOpenBot(block.botId)}
-              className="w-[min(340px,90%)] rounded-[18px] border border-border bg-muted px-[18px] py-4 text-start disabled:opacity-60"
-            >
-              <div className="flex items-center justify-between">
-                <span className="text-[15px] font-medium text-foreground" dir="auto">
-                  {block.name}
-                </span>
-                <span
-                  className={`rounded-full px-[11px] py-1 text-[13px] ${
-                    removed ? "bg-destructive/15 text-destructive" : "bg-success/15 text-success"
-                  }`}
-                >
-                  {block.status === "archived" ? (
-                    <Trans>archived</Trans>
-                  ) : block.status === "deleted" ? (
-                    <Trans>deleted</Trans>
-                  ) : (
-                    <Trans>bot</Trans>
-                  )}
-                </span>
-              </div>
-              <div className="mt-2 text-[14.5px] leading-[1.5] text-foreground/75" dir="auto">
-                {removed
-                  ? block.status === "archived"
-                    ? t`Archived. Chat, memory, and files kept.`
-                    : t`Removed with chat, computer, and memory.`
-                  : block.title || t`Opened its thread.`}
-              </div>
-            </button>
-          );
-        }
-        if (block.kind === "choice") {
-          const botId = "botId" in artifactTarget ? artifactTarget.botId : message.botId;
-          if (!botId) return null;
-          return <ChoiceCard key={i} botId={botId} block={block} onBotChanged={onBotChanged} />;
-        }
-        if (block.kind === "app_connect") {
-          const botId = "botId" in artifactTarget ? artifactTarget.botId : message.botId;
-          if (!botId) return null;
-          return (
-            <div key={i} className="flex justify-start py-1">
-              <AppConnectCard botId={botId} block={block} />
-            </div>
-          );
-        }
-        if (block.kind === "chart") {
-          return (
-            <div key={i} className="flex justify-start">
-              <ChartBlockView name={block.name} spec={block.spec} data={block.data} />
-            </div>
-          );
-        }
-        if (block.kind === "mcp_approval") {
-          const botId = "botId" in artifactTarget ? artifactTarget.botId : message.botId;
-          if (!botId) return null;
-          return (
-            <div key={i} className="flex justify-start">
-              <McpApprovalCard botId={botId} threadId={message.threadId} block={block} />
-            </div>
-          );
-        }
-        if (block.kind === "image") {
-          return (
-            <div
-              key={i}
-              className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}
-            >
-              <ArtifactImage
-                target={artifactTarget}
-                artifactId={block.artifactId}
-                name={block.name}
+      <div className="relative flex flex-col gap-2">
+        {message.blocks.map((block, i) => {
+          if (block.kind === "steps" && shouldRenderToolCard(block, showToolActivity)) {
+            return (
+              <StandaloneToolActivity
+                key={i}
+                live={isLive}
+                steps={block.steps}
+                stepCount={toolStepCount(block.steps)}
+                durationMs={block.durationMs}
               />
-            </div>
-          );
-        }
-        if (block.kind === "file") {
-          return (
-            <div
-              key={i}
-              className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}
-            >
-              <ArtifactFileCard
-                target={artifactTarget}
-                artifactId={block.artifactId}
-                name={block.name}
-                mimeType={block.mimeType}
-                size={block.size}
-              />
-            </div>
-          );
-        }
-        if (block.kind === "text" && message.role === "user") {
-          // User bubbles stay literal text on web and mobile. Only explicit URLs
-          // and email addresses are links, so a sent address is tappable without
-          // formatting bold or headings.
-          return (
-            <div key={i} className="flex w-fit max-w-full justify-end [@media(hover:none)]:w-full">
+            );
+          }
+          if (isToolActivityBlock(block)) return null;
+          if (block.kind === "handoff") {
+            const from = memberName?.(block.fromBotId) ?? t`bot`;
+            const to = memberName?.(block.toBotId) ?? t`bot`;
+            return (
               <div
-                data-testid="message-user-bubble"
-                data-quote-message-id={quoteMessageId}
-                className="max-w-full whitespace-pre-wrap wrap-anywhere rounded-[20px] bg-chat-user px-[18px] py-3 text-[15.5px] leading-[1.45] text-chat-user-foreground"
-                dir="auto"
+                key={i}
+                className="flex items-center justify-center gap-2 py-1 text-[13.5px] text-muted-foreground"
               >
-                <LinkifiedText>{block.text}</LinkifiedText>
+                <span>
+                  ↪ {to} ← {from}
+                </span>
+                <span>{block.text}</span>
               </div>
-            </div>
-          );
-        }
-        if (block.kind === "text") {
-          return (
-            <div
-              key={i}
-              className="flex w-fit max-w-full justify-start [@media(hover:none)]:w-full"
-            >
+            );
+          }
+          if (block.kind === "bot_message_sent" || block.kind === "bot_message_received") {
+            const sent = block.kind === "bot_message_sent";
+            const peer = sent ? block.toBotName : block.fromBotName;
+            const peerBotId = sent ? block.toBotId : block.fromBotId;
+            const label = sent ? t`Messaged ${peer}` : t`Message from ${peer}`;
+            return (
+              <CollaborationMarker
+                key={i}
+                ariaLabel={label}
+                color={peerBot(peerBotId)?.color ?? FALLBACK_BOT_COLOR}
+                identity={peerBotId}
+                label={label}
+                onClick={() => onOpenPeerMessages({ peerBotId, peerBotName: peer })}
+                replies={
+                  !sent && peerReplies
+                    ? {
+                        expanded: peerReplies === "expanded",
+                        label:
+                          peerReplies === "expanded" ? t`Collapse ${label}` : t`Expand ${label}`,
+                        onToggle: () => onTogglePeerReplies(message.id),
+                      }
+                    : undefined
+                }
+              />
+            );
+          }
+          if (block.kind === "channel_message") {
+            return (
               <div
-                data-testid="message-bot-bubble"
-                className="max-w-full rounded-[20px] bg-muted px-[18px] py-3 text-[15.5px] leading-[1.5] text-foreground/90"
-                dir="auto"
+                key={i}
+                className="flex items-center justify-center gap-2 py-1 text-[13.5px] text-muted-foreground"
               >
-                <div data-quote-message-id={quoteMessageId}>
-                  <ChatMarkdown>{block.text}</ChatMarkdown>
+                <span>
+                  {messageProviderLabel(block.provider, block.transport)} · {block.fromLabel}:{" "}
+                  {block.text}
+                </span>
+              </div>
+            );
+          }
+          if (block.kind === "meta") {
+            return (
+              <div
+                key={i}
+                className="flex items-center justify-center gap-2 py-1 text-[13.5px] text-muted-foreground"
+              >
+                <span className="text-warning">◷</span>
+                <span>{block.text}</span>
+              </div>
+            );
+          }
+          if (block.kind === "progress") {
+            return (
+              <div
+                key={i}
+                className="flex w-fit max-w-full justify-start [@media(hover:none)]:w-full"
+              >
+                <div
+                  data-testid="message-bot-bubble"
+                  className="max-w-full rounded-[20px] bg-muted px-[18px] py-3 text-[15.5px] leading-[1.5] text-foreground/90"
+                  dir="auto"
+                >
+                  <ChatMarkdown streaming>{block.text}</ChatMarkdown>
                 </div>
-                {voiceReady ? (
-                  <button
-                    type="button"
-                    aria-label={speaking ? t`Stop speaking` : t`Speak this reply`}
-                    onClick={onSpeak}
-                    className="mt-2 text-[12px] text-muted-foreground hover:text-foreground"
+              </div>
+            );
+          }
+          if (block.kind === "subagent") {
+            const running = block.status === "running";
+            const failed = block.status === "failed";
+            return (
+              <div
+                key={i}
+                className="w-[min(420px,90%)] rounded-[18px] border border-border bg-muted px-[18px] py-4"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-[15px] font-medium text-foreground" dir="auto">
+                    {block.name}
+                  </span>
+                  <span
+                    className={`rounded-full px-[11px] py-1 text-[13px] ${
+                      failed
+                        ? "bg-destructive/15 text-destructive"
+                        : running
+                          ? "bg-warning/15 text-warning"
+                          : "bg-success/15 text-success"
+                    }`}
+                    style={{
+                      animation: running ? "rkPulse 1.2s ease-in-out infinite" : undefined,
+                    }}
                   >
-                    {speaking ? <Trans>Stop</Trans> : <Trans>Speak</Trans>}
-                  </button>
+                    {running ? <Trans>subagent</Trans> : block.status}
+                  </span>
+                </div>
+                <div className="mt-2 text-[13.5px] text-muted-foreground">{block.task}</div>
+                {block.progress || block.result ? (
+                  <div className="mt-2.5 text-[14.5px] leading-[1.5] text-foreground/75">
+                    <ChatMarkdown streaming={running}>
+                      {block.result || block.progress || ""}
+                    </ChatMarkdown>
+                  </div>
                 ) : null}
               </div>
-            </div>
-          );
-        }
-        if (block.kind === "card") {
-          return (
-            <div key={i} className="flex justify-start">
-              <div className="flex flex-col gap-2 rounded-[20px] bg-muted px-5 py-4">
-                {block.lines.map((line) => (
-                  <div key={line.k} className="flex items-baseline gap-2.5 text-[15px]">
-                    <span className="text-success">✓</span>
-                    <span className="font-semibold text-white">{line.k}</span>
-                    <span className="text-muted-foreground">→</span>
-                    <span>{line.v}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          );
-        }
-        if (block.kind === "ask") {
-          return (
-            <AskCard
-              key={i}
-              block={block}
-              canAnswer={canAnswer}
-              onAnswer={(text, username) => onAnswer(message, text, username)}
-            />
-          );
-        }
-        if (block.kind === "cloud_agent") return <CloudAgentCard key={i} block={block} />;
-        if (block.kind === "skill_draft") {
-          return (
-            <div key={i} className="flex justify-start">
-              <SkillDraftCard block={block} onRefresh={onRefresh} onAddRoutine={onAddRoutine} />
-            </div>
-          );
-        }
-        if (block.kind === "computer") {
-          return (
-            <div
-              key={i}
-              data-testid="computer-card"
-              className="w-[340px] rounded-[18px] border border-border bg-muted px-[18px] py-4"
-            >
-              <div className="flex items-center justify-between">
-                <span className="text-[15px] font-medium text-foreground">
-                  <Trans>Computer</Trans>
-                </span>
-                <span
-                  className={
-                    block.state === "Needs you"
-                      ? "rounded-full bg-warning/15 px-[11px] py-1 text-[13px] text-warning"
-                      : block.state === "Skipped"
-                        ? "rounded-full bg-foreground/10 px-[11px] py-1 text-[13px] text-muted-foreground"
-                        : "rounded-full bg-success/15 px-[11px] py-1 text-[13px] text-success"
-                  }
-                >
-                  {block.state}
-                </span>
-              </div>
-              <div className="my-2.5 text-[14.5px] leading-[1.5] text-foreground/75">
-                <ChatMarkdown>{block.text}</ChatMarkdown>
-              </div>
-              <Button
+            );
+          }
+          if (block.kind === "child_bot") {
+            const removed = block.status === "deleted" || block.status === "archived";
+            return (
+              <button
+                key={i}
                 type="button"
-                size="sm"
-                data-testid="computer-card-open"
-                onClick={() => onOpenComputer(message.botId)}
+                disabled={removed}
+                onClick={() => onOpenBot(block.botId)}
+                className="w-[min(340px,90%)] rounded-[18px] border border-border bg-muted px-[18px] py-4 text-start disabled:opacity-60"
               >
-                <Trans>Open</Trans>
-              </Button>
-            </div>
-          );
-        }
-        return null;
-      })}
+                <div className="flex items-center justify-between">
+                  <span className="text-[15px] font-medium text-foreground" dir="auto">
+                    {block.name}
+                  </span>
+                  <span
+                    className={`rounded-full px-[11px] py-1 text-[13px] ${
+                      removed ? "bg-destructive/15 text-destructive" : "bg-success/15 text-success"
+                    }`}
+                  >
+                    {block.status === "archived" ? (
+                      <Trans>archived</Trans>
+                    ) : block.status === "deleted" ? (
+                      <Trans>deleted</Trans>
+                    ) : (
+                      <Trans>bot</Trans>
+                    )}
+                  </span>
+                </div>
+                <div className="mt-2 text-[14.5px] leading-[1.5] text-foreground/75" dir="auto">
+                  {removed
+                    ? block.status === "archived"
+                      ? t`Archived. Chat, memory, and files kept.`
+                      : t`Removed with chat, computer, and memory.`
+                    : block.title || t`Opened its thread.`}
+                </div>
+              </button>
+            );
+          }
+          if (block.kind === "choice") {
+            const botId = "botId" in artifactTarget ? artifactTarget.botId : message.botId;
+            if (!botId) return null;
+            return <ChoiceCard key={i} botId={botId} block={block} onBotChanged={onBotChanged} />;
+          }
+          if (block.kind === "app_connect") {
+            const botId = "botId" in artifactTarget ? artifactTarget.botId : message.botId;
+            if (!botId) return null;
+            return (
+              <div key={i} className="flex justify-start py-1">
+                <AppConnectCard botId={botId} block={block} />
+              </div>
+            );
+          }
+          if (block.kind === "chart") {
+            return (
+              <div key={i} className="flex justify-start">
+                <ChartBlockView name={block.name} spec={block.spec} data={block.data} />
+              </div>
+            );
+          }
+          if (block.kind === "mcp_approval") {
+            const botId = "botId" in artifactTarget ? artifactTarget.botId : message.botId;
+            if (!botId) return null;
+            return (
+              <div key={i} className="flex justify-start">
+                <McpApprovalCard botId={botId} threadId={message.threadId} block={block} />
+              </div>
+            );
+          }
+          if (block.kind === "image") {
+            return (
+              <div
+                key={i}
+                className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}
+              >
+                <ArtifactImage
+                  target={artifactTarget}
+                  artifactId={block.artifactId}
+                  name={block.name}
+                />
+              </div>
+            );
+          }
+          if (block.kind === "file") {
+            return (
+              <div
+                key={i}
+                className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}
+              >
+                <ArtifactFileCard
+                  target={artifactTarget}
+                  artifactId={block.artifactId}
+                  name={block.name}
+                  mimeType={block.mimeType}
+                  size={block.size}
+                />
+              </div>
+            );
+          }
+          if (block.kind === "text" && message.role === "user") {
+            // User bubbles stay literal text on web and mobile. Only explicit URLs
+            // and email addresses are links, so a sent address is tappable without
+            // formatting bold or headings.
+            return (
+              <div
+                key={i}
+                className="relative flex w-fit max-w-full justify-end [@media(hover:none)]:w-full [@media(hover:none)]:flex-wrap"
+              >
+                <div
+                  data-testid="message-user-bubble"
+                  data-quote-message-id={quoteMessageId}
+                  className="max-w-full whitespace-pre-wrap wrap-anywhere rounded-[20px] bg-chat-user px-[18px] py-3 text-[15.5px] leading-[1.45] text-chat-user-foreground"
+                  dir="auto"
+                >
+                  <LinkifiedText>{block.text}</LinkifiedText>
+                </div>
+                {i === hoverAnchorIndex ? hoverActions : null}
+              </div>
+            );
+          }
+          if (block.kind === "text") {
+            return (
+              <div
+                key={i}
+                className="relative flex w-fit max-w-full justify-start [@media(hover:none)]:w-full [@media(hover:none)]:flex-wrap"
+              >
+                <div
+                  data-testid="message-bot-bubble"
+                  className="max-w-full rounded-[20px] bg-muted px-[18px] py-3 text-[15.5px] leading-[1.5] text-foreground/90"
+                  dir="auto"
+                >
+                  <div data-quote-message-id={quoteMessageId}>
+                    <ChatMarkdown>{block.text}</ChatMarkdown>
+                  </div>
+                  {voiceReady ? (
+                    <button
+                      type="button"
+                      aria-label={speaking ? t`Stop speaking` : t`Speak this reply`}
+                      onClick={onSpeak}
+                      className="mt-2 text-[12px] text-muted-foreground hover:text-foreground"
+                    >
+                      {speaking ? <Trans>Stop</Trans> : <Trans>Speak</Trans>}
+                    </button>
+                  ) : null}
+                </div>
+                {i === hoverAnchorIndex ? hoverActions : null}
+              </div>
+            );
+          }
+          if (block.kind === "card") {
+            return (
+              <div key={i} className="flex justify-start">
+                <div className="flex flex-col gap-2 rounded-[20px] bg-muted px-5 py-4">
+                  {block.lines.map((line) => (
+                    <div key={line.k} className="flex items-baseline gap-2.5 text-[15px]">
+                      <span className="text-success">✓</span>
+                      <span className="font-semibold text-white">{line.k}</span>
+                      <span className="text-muted-foreground">→</span>
+                      <span>{line.v}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          }
+          if (block.kind === "ask") {
+            return (
+              <AskCard
+                key={i}
+                block={block}
+                canAnswer={canAnswer}
+                canDismiss={canDismiss}
+                onAnswer={(text, username) => onAnswer(message, text, username)}
+                onDismiss={() => onAnswer(message, "", undefined, true)}
+              />
+            );
+          }
+          if (block.kind === "cloud_agent") return <CloudAgentCard key={i} block={block} />;
+          if (block.kind === "skill_draft") {
+            return (
+              <div key={i} className="flex justify-start">
+                <SkillDraftCard block={block} onRefresh={onRefresh} onAddRoutine={onAddRoutine} />
+              </div>
+            );
+          }
+          if (block.kind === "computer") {
+            return (
+              <div
+                key={i}
+                data-testid="computer-card"
+                className="w-[340px] rounded-[18px] border border-border bg-muted px-[18px] py-4"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-[15px] font-medium text-foreground">
+                    <Trans>Computer</Trans>
+                  </span>
+                  <span
+                    className={
+                      block.state === "Needs you"
+                        ? "rounded-full bg-warning/15 px-[11px] py-1 text-[13px] text-warning"
+                        : block.state === "Skipped"
+                          ? "rounded-full bg-foreground/10 px-[11px] py-1 text-[13px] text-muted-foreground"
+                          : "rounded-full bg-success/15 px-[11px] py-1 text-[13px] text-success"
+                    }
+                  >
+                    {block.state}
+                  </span>
+                </div>
+                <div className="my-2.5 text-[14.5px] leading-[1.5] text-foreground/75">
+                  <ChatMarkdown>{block.text}</ChatMarkdown>
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  data-testid="computer-card-open"
+                  onClick={() => onOpenComputer(message.botId)}
+                >
+                  <Trans>Open</Trans>
+                </Button>
+              </div>
+            );
+          }
+          return null;
+        })}
+        {hoverAnchorIndex === -1 ? hoverActions : null}
+      </div>
     </>
   );
 });

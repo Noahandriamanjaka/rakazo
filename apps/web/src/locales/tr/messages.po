@@ -347,7 +347,7 @@ msgstr ""
 
 #. placeholder {0}: bot.name
 #. placeholder {0}: group.spaceName
-#. placeholder {0}: sectionMenu.section.name
+#. placeholder {0}: section.name
 #: src/pages/BotContextMenu.tsx
 #: src/pages/Shell.tsx
 msgid "Actions for {0}"
@@ -392,6 +392,10 @@ msgstr "İzlenecek bir dosya veya klasör ekleyin"
 #: src/components/ApprovalRulesSettings.tsx
 msgid "Add a model in Settings to use this."
 msgstr ""
+
+#: src/components/PasskeyOffer.tsx
+msgid "Add a passkey for faster sign-in?"
+msgstr "Daha hızlı oturum açmak için geçiş anahtarı eklensin mi?"
 
 #: src/pages/Shell.tsx
 msgid "Add a run time for this one-shot."
@@ -454,6 +458,11 @@ msgstr "MCP sunucusu ekle"
 #: src/pages/PluginsOverlay.tsx
 msgid "Add OpenAPI"
 msgstr "OpenAPI ekle"
+
+#: src/components/PasskeyOffer.tsx
+#: src/components/PasskeySettings.tsx
+msgid "Add passkey"
+msgstr "Geçiş anahtarı ekle"
 
 #: src/pages/PluginsOverlay.tsx
 msgid "Add remote MCP server"
@@ -573,6 +582,10 @@ msgstr "Zaten hesabın var mı?"
 #: src/pages/ExternalConversationSettings.tsx
 msgid "Always act"
 msgstr ""
+
+#: src/components/AskCard.tsx
+msgid "Always allow {site}"
+msgstr "{site} için her zaman izin ver"
 
 #: src/components/AskCard.tsx
 msgid "Always allow this tool"
@@ -782,11 +795,12 @@ msgstr "Avatar Stüdyosu"
 msgid "Avatars"
 msgstr ""
 
+#: src/pages/Auth.tsx
 #: src/pages/Board.tsx
 #: src/pages/PluginsOverlay.tsx
 #: src/pages/RoutineEditor.tsx
 msgid "Back"
-msgstr ""
+msgstr "Geri"
 
 #: src/pages/Auth.tsx
 msgid "Back to sign in"
@@ -804,7 +818,7 @@ msgstr "Yedek model sırası"
 msgid "Backup models saved."
 msgstr "Yedek modeller kaydedildi."
 
-#: src/pages/memory-providers/SupermemorySettingsForm.tsx
+#: src/pages/memory-providers/ConnectionModeFields.tsx
 msgid "Base URL"
 msgstr "Temel URL"
 
@@ -933,6 +947,7 @@ msgstr "Görselleri okuyamaz"
 #: src/components/ComputerMaintenanceActions.tsx
 #: src/components/ComputerUpdateProgress.tsx
 #: src/components/markdown-link-prompt.tsx
+#: src/components/PasskeySettings.tsx
 #: src/components/teach/TeachComputerOverlay.tsx
 #: src/pages/Artifacts.tsx
 #: src/pages/KnowledgeSection.tsx
@@ -1167,11 +1182,16 @@ msgstr "Kullanıcı ayarlarını kapat"
 msgid "Close voice settings"
 msgstr "Ses ayarlarını kapat"
 
-#: src/pages/memory-providers/SupermemorySettingsForm.tsx
+#: src/pages/memory-providers/ConnectionModeFields.tsx
 msgid "Cloud"
 msgstr "Bulut"
 
 #: src/components/AskCard.tsx
+msgid "Code"
+msgstr "Kod"
+
+#: src/pages/Auth.tsx
+msgctxt "email sign-in"
 msgid "Code"
 msgstr "Kod"
 
@@ -1351,6 +1371,10 @@ msgstr "Bağlandı. Araçları bir sonraki mesajından itibaren kullanılabilir.
 msgid "Connecting…"
 msgstr "Bağlanıyor…"
 
+#: src/pages/memory-providers/ConnectionModeFields.tsx
+msgid "Connection"
+msgstr "Bağlantı"
+
 #: src/lib/model-connection-preflight.ts
 msgid "Connection test failed."
 msgstr "Bağlantı testi başarısız."
@@ -1366,6 +1390,7 @@ msgid "Context limit"
 msgstr "Bağlam sınırı"
 
 #: src/components/integrations/IntegrationSetup.tsx
+#: src/pages/Auth.tsx
 #: src/pages/Onboarding.tsx
 msgid "Continue"
 msgstr "Devam"
@@ -1470,6 +1495,8 @@ msgid "Could not connect to the computer screen"
 msgstr ""
 
 #: src/components/AccountAccess.tsx
+#: src/components/PasskeyOffer.tsx
+#: src/components/PasskeySettings.tsx
 #: src/lib/account-security.ts
 #: src/lib/sso-flow.ts
 #: src/lib/user-error.ts
@@ -1568,6 +1595,7 @@ msgid "Could not install connector"
 msgstr "Bağlayıcı kurulamadı"
 
 #: src/components/ErrorBoundary.tsx
+#: src/components/PasskeySettings.tsx
 #: src/pages/KnowledgeSection.tsx
 msgid "Could not load"
 msgstr "Yüklenemedi"
@@ -1667,6 +1695,8 @@ msgstr "Deneme sesi çalınamadı"
 msgid "Could not reach the model server."
 msgstr "Model sunucusuna ulaşılamadı."
 
+#: src/components/PasskeyOffer.tsx
+#: src/components/PasskeySettings.tsx
 #: src/lib/computer-sandbox.ts
 #: src/lib/user-error.ts
 #: src/pages/AccountSettingsOverlay.tsx
@@ -1987,6 +2017,7 @@ msgstr "Varsayılan ({0})"
 msgid "Default scope"
 msgstr "Varsayılan kapsam"
 
+#: src/components/PasskeySettings.tsx
 #: src/pages/Artifacts.tsx
 #: src/pages/BotContextMenu.tsx
 #: src/pages/KnowledgeSection.tsx
@@ -1997,10 +2028,12 @@ msgstr "Varsayılan kapsam"
 msgid "Delete"
 msgstr "Sil"
 
+#. placeholder {0}: passkeyLabel(deleting, t`Passkey`)
 #. placeholder {0}: pendingDelete.name
+#: src/components/PasskeySettings.tsx
 #: src/pages/Artifacts.tsx
 msgid "Delete \"{0}\"?"
-msgstr ""
+msgstr "\"{0}\" silinsin mi?"
 
 #. placeholder {0}: artifact.name
 #. placeholder {0}: bot.name
@@ -2040,6 +2073,7 @@ msgstr ""
 msgid "deleted"
 msgstr "silindi"
 
+#: src/components/PasskeySettings.tsx
 #: src/pages/Artifacts.tsx
 #: src/pages/shell/dialogs.tsx
 msgid "Deleting…"
@@ -2119,6 +2153,7 @@ msgstr "Bağlantı kesiliyor…"
 
 #: src/components/AskCard.tsx
 #: src/components/ComputerUpdateProgress.tsx
+#: src/components/PasskeyOffer.tsx
 #: src/components/teach/TeachComputerOverlay.tsx
 #: src/pages/shell/message-cards.tsx
 msgid "Dismiss"
@@ -2704,6 +2739,10 @@ msgstr "Aralık miktarı"
 msgid "Interval unit"
 msgstr "Aralık birimi"
 
+#: src/lib/user-error.ts
+msgid "Invalid code"
+msgstr "Geçersiz kod"
+
 #: src/pages/MemorySettingsOverlay.tsx
 #: src/pages/shell/bot-panel.tsx
 msgid "Isolated"
@@ -2864,7 +2903,7 @@ msgstr "Ses sağlayıcıları yükleniyor…"
 msgid "Loading…"
 msgstr "Yükleniyor…"
 
-#: src/pages/memory-providers/SupermemorySettingsForm.tsx
+#: src/pages/memory-providers/ConnectionModeFields.tsx
 msgid "Local"
 msgstr "Yerel"
 
@@ -3304,6 +3343,7 @@ msgid "No matching artifacts on this page."
 msgstr ""
 
 #: src/pages/ModelSettingsOverlay.tsx
+#: src/pages/shell/chat-model-picker.tsx
 msgid "No matching models"
 msgstr ""
 
@@ -3559,6 +3599,14 @@ msgstr ""
 msgid "Park"
 msgstr "Beklet"
 
+#: src/components/PasskeySettings.tsx
+msgid "Passkey"
+msgstr "Geçiş anahtarı"
+
+#: src/components/PasskeySettings.tsx
+msgid "Passkeys"
+msgstr "Geçiş anahtarları"
+
 #: src/components/AskCard.tsx
 #: src/pages/AccountSettingsOverlay.tsx
 #: src/pages/Auth.tsx
@@ -3637,6 +3685,10 @@ msgstr "Kontrol edilecek bir araç seçin"
 #: src/pages/BotContextMenu.tsx
 msgid "Pin"
 msgstr "Sabitle"
+
+#: src/pages/Shell.tsx
+msgid "Pinned"
+msgstr "Sabitlenenler"
 
 #: src/components/ArtifactFileCard.tsx
 msgid "Play {name}"
@@ -3909,6 +3961,10 @@ msgstr "Kaldırıldı ama liste yenilenemedi"
 msgid "Removing…"
 msgstr "Kaldırılıyor…"
 
+#: src/components/PasskeySettings.tsx
+msgid "Rename"
+msgstr "Yeniden adlandır"
+
 #: src/pages/BotContextMenu.tsx
 #: src/pages/Shell.tsx
 #: src/pages/shell/dialogs.tsx
@@ -3952,6 +4008,10 @@ msgstr ""
 #: src/pages/Shell.tsx
 msgid "Replying to {0}"
 msgstr ""
+
+#: src/lib/user-error.ts
+msgid "Request a new code"
+msgstr "Yeni bir kod isteyin"
 
 #: src/pages/shell/message-cards.tsx
 msgid "Research & writing"
@@ -4016,8 +4076,10 @@ msgid "Restoring your workspace"
 msgstr ""
 
 #: src/components/AccountAccess.tsx
+#: src/components/PasskeySettings.tsx
 #: src/pages/Auth.tsx
 #: src/pages/ModelBackupsSettings.tsx
+#: src/pages/PluginsOverlay.tsx
 #: src/pages/SettingsOverlay.tsx
 msgid "Retry"
 msgstr "Yeniden dene"
@@ -4112,6 +4174,7 @@ msgid "Runs when this bot receives a verified message from this provider."
 msgstr ""
 
 #: src/components/AskCard.tsx
+#: src/components/PasskeySettings.tsx
 #: src/components/teach/SkillDraftCard.tsx
 #: src/pages/Board.tsx
 #: src/pages/ExternalConversationSettings.tsx
@@ -4185,6 +4248,7 @@ msgstr "Evet ya da hayır de veya bir cümleyle yanıtla."
 #: src/pages/PluginsOverlay.tsx
 #: src/pages/Shell.tsx
 #: src/pages/shell/bot-picker.tsx
+#: src/pages/shell/chat-model-picker.tsx
 #: src/pages/shell/command-palette.tsx
 msgid "Search"
 msgstr "Ara"
@@ -4211,6 +4275,7 @@ msgid "Search integrations.sh"
 msgstr ""
 
 #: src/pages/ModelSettingsOverlay.tsx
+#: src/pages/shell/chat-model-picker.tsx
 msgid "Search models"
 msgstr ""
 
@@ -4397,10 +4462,11 @@ msgid "Sign in"
 msgstr "Oturum aç"
 
 #: src/components/AccountAccess.tsx
+#: src/lib/passkeys.ts
 #: src/lib/user-error.ts
 #: src/pages/ModelSettingsOverlay.tsx
 msgid "Sign in again"
-msgstr ""
+msgstr "Yeniden giriş yap"
 
 #: src/pages/Auth.tsx
 msgid "Sign in to Rakazo"
@@ -4409,6 +4475,10 @@ msgstr "Rakazo'da oturum aç"
 #: src/lib/user-error.ts
 msgid "Sign in to your existing account to link SSO"
 msgstr "SSO bağlamak için mevcut hesabınıza giriş yapın"
+
+#: src/components/PasskeySignIn.tsx
+msgid "Sign in with passkey"
+msgstr "Geçiş anahtarıyla oturum aç"
 
 #: src/lib/model-connection-preflight.ts
 msgid "Sign in with the subscription, or test the API key instead."
@@ -4702,9 +4772,10 @@ msgstr "Bu bot bir Linux masaüstünde değil, bu bilgisayarda çalışır. Kabu
 msgid "This call is no longer ringing."
 msgstr ""
 
+#: src/components/PasskeySettings.tsx
 #: src/pages/Artifacts.tsx
 msgid "This can't be undone."
-msgstr ""
+msgstr "Bu işlem geri alınamaz."
 
 #: src/pages/shell/dialogs.tsx
 msgid "This cannot be undone."
@@ -4888,6 +4959,7 @@ msgid "Type your answer"
 msgstr "Yanıtını yaz"
 
 #: src/pages/BotContextMenu.tsx
+#: src/pages/Shell.tsx
 msgid "Unassigned"
 msgstr "Atanmamış"
 
@@ -5028,6 +5100,14 @@ msgstr "Anahtarı doğrulamak için Bağlan'ı kullan."
 #: src/pages/ExternalConversationSettings.tsx
 msgid "Use default guidance"
 msgstr ""
+
+#: src/pages/Auth.tsx
+msgid "Use email code"
+msgstr "E-posta kodu kullan"
+
+#: src/pages/Auth.tsx
+msgid "Use password"
+msgstr "Parola kullan"
 
 #: src/components/teach/TeachRecordingChrome.tsx
 msgid "Use Protected input for passwords."

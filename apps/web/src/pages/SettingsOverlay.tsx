@@ -1,6 +1,13 @@
 import { useLingui } from "@lingui/react/macro";
 import type { AvatarStyle, SpaceMemoryConfig } from "@rakazo/contracts";
-import { Button, Dialog, DialogClose, DialogContent, DialogTitle } from "@rakazo/ui-web";
+import {
+  Button,
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogTitle,
+  OptionSelect,
+} from "@rakazo/ui-web";
 import {
   Brain,
   CloudDownload,
@@ -17,7 +24,8 @@ import type { ComponentType } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApprovalRulesSettings } from "../components/ApprovalRulesSettings";
 import { computersAreUnavailable } from "../components/ComputersUnavailableHint";
-import { ListboxSelect } from "../components/ListboxSelect";
+import { hasServerUpdates, useServerUpdateStatus } from "../components/SoftwareUpdateSection";
+import { desktopBridge } from "../lib/desktop";
 import { rpcForSpace } from "../lib/rpc";
 import { SpaceRpcProvider } from "../lib/space-rpc";
 import { errorText } from "../lib/user-error";
@@ -123,6 +131,8 @@ export function SettingsOverlay({
   const recoveryHoldTimer = useRef<number | undefined>(undefined);
   const showComputer =
     keepComputerRecovery || (isDeploymentOwner && computersAreUnavailable(sandboxProvider));
+  const serverUpdate = useServerUpdateStatus(isDeploymentOwner);
+  const showUpdates = Boolean(desktopBridge()?.update) || hasServerUpdates(serverUpdate);
   const panelBusy = memoryBusy || voiceBusy;
   const spaceScoped = SPACE_SECTIONS.has(section);
   const spaceId = spaceScoped ? (space?.id ?? null) : null;
@@ -187,6 +197,10 @@ export function SettingsOverlay({
   }, [billingEnabled, section]);
 
   useEffect(() => {
+    if (!showUpdates && !serverUpdate.loading && section === "updates") setSection("general");
+  }, [showUpdates, serverUpdate.loading, section]);
+
+  useEffect(() => {
     if (section !== "computer") releaseComputerRecovery();
   }, [section, releaseComputerRecovery]);
   useEffect(() => () => window.clearTimeout(recoveryHoldTimer.current), []);
@@ -207,7 +221,7 @@ export function SettingsOverlay({
     { id: "usage", label: t`Usage`, icon: Gauge },
     ...(showComputer ? [{ id: "computer" as const, label: t`Computer`, icon: Monitor }] : []),
     ...(billingEnabled ? [{ id: "billing" as const, label: t`Billing`, icon: CreditCard }] : []),
-    { id: "updates", label: t`Updates`, icon: CloudDownload },
+    ...(showUpdates ? [{ id: "updates" as const, label: t`Updates`, icon: CloudDownload }] : []),
   ];
 
   const sectionTitle =
@@ -289,20 +303,23 @@ export function SettingsOverlay({
           </nav>
 
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-            <div className="flex items-start justify-between gap-4 px-6 pt-6 sm:px-8 sm:pt-7">
+            <div
+              data-testid="settings-header"
+              className="flex shrink-0 items-start justify-between gap-4 border-b border-border px-6 pb-5 pt-6 sm:px-8 sm:pt-7"
+            >
               <div className="flex min-w-0 flex-col gap-2">
                 <DialogTitle className="text-2xl font-medium text-foreground">
                   {sectionTitle}
                 </DialogTitle>
                 {!spaceScoped ? null : space && spaces.length > 1 && onSpaceChange ? (
-                  <ListboxSelect
+                  <OptionSelect
                     className="w-56"
-                    testId="settings-space"
-                    label={t`Space`}
+                    data-testid="settings-space"
+                    aria-label={t`Space`}
                     options={spaces.map((option) => ({ value: option.id, label: option.name }))}
                     value={space.id}
                     disabled={panelBusy}
-                    onChange={(next) => {
+                    onValueChange={(next) => {
                       if (next !== space.id) leaveSettings(() => onSpaceChange(next));
                     }}
                   />
@@ -324,10 +341,11 @@ export function SettingsOverlay({
             <SpaceRpcProvider spaceId={spaceId}>
               <div
                 key={spaceId ?? "selected"}
+                data-testid="settings-scroll"
                 className={`min-h-0 flex-1 ${
                   section === "models" || section === "voice" || section === "memory"
                     ? "flex flex-col overflow-hidden"
-                    : "rk-scroll overflow-y-auto overscroll-contain px-6 pb-6 pt-5 sm:px-8 sm:pb-8"
+                    : "rk-scroll overflow-y-auto overscroll-contain px-6 pb-6 pt-6 sm:px-8 sm:pb-8"
                 }`}
               >
                 {section === "general" ? (
@@ -360,8 +378,8 @@ export function SettingsOverlay({
                   />
                 ) : null}
                 {section === "billing" && billingEnabled ? <BillingSettingsPanel /> : null}
-                {section === "updates" ? (
-                  <UpdatesSettingsPanel isDeploymentOwner={isDeploymentOwner} />
+                {section === "updates" && showUpdates ? (
+                  <UpdatesSettingsPanel serverUpdate={serverUpdate} />
                 ) : null}
                 {section === "models" ? (
                   <ModelSettingsOverlay embedded onClose={requestClose} />

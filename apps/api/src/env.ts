@@ -22,6 +22,8 @@ export { resolveCloudAgentProvider, resolveSandboxProvider } from "@rakazo/adapt
 
 export interface AppEnv {
   passwordAuth?: boolean;
+  /** Opt-in Have I Been Pwned check for new passwords. Default off: it calls an outside service. */
+  breachedPasswordCheck?: boolean;
   oidc?: OidcConfig;
   nodeEnv: string;
   desktopStackToken?: string;
@@ -30,9 +32,17 @@ export interface AppEnv {
   authSecret: string;
   authUrl: string;
   webOrigin: string;
+  /** `<TEAM_ID>.<bundle id>` of iOS apps that may use this domain's passkeys. */
+  passkeyAppleAppIds: string[];
+  /** SHA-256 signing certificate fingerprints of Android apps that may use this domain's passkeys. */
+  passkeyAndroidCertFingerprints: string[];
   privacyPolicyUrl?: string;
   apiUrl: string;
   apiHost: string;
+  /** Proxies whose forwarded client address is believed; anyone else is the client. */
+  trustedProxies: string[];
+  /** The header those proxies set. */
+  clientIpHeader: string;
   signupsEnabled: string | undefined;
   signupAllowlist: string | undefined;
   encryptionKey: string;
@@ -74,6 +84,7 @@ export interface AppEnv {
   sendblueApiSecret: string | undefined;
   sendblueSigningSecret: string | undefined;
   sendbluePhoneNumber: string | undefined;
+  expoAccessToken: string | undefined;
   smtpUrl: string | undefined;
   emailFrom: string | undefined;
   /** Billing turns on only when all three are set; self-hosted installs leave them unset. */
@@ -142,7 +153,11 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
       throw new Error("OIDC_ISSUER must be an HTTPS issuer URL");
     }
   }
-  for (const key of ["AUTH_PASSWORD_ENABLED", "OIDC_ALLOW_SIGNUP_BYPASS"]) {
+  for (const key of [
+    "AUTH_PASSWORD_ENABLED",
+    "AUTH_BREACHED_PASSWORD_CHECK_ENABLED",
+    "OIDC_ALLOW_SIGNUP_BYPASS",
+  ]) {
     const value = source[key];
     if (value && !["true", "false"].includes(value))
       throw new Error(`${key} must be true or false`);
@@ -171,6 +186,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
   const updaterToken = optional(source.RAKAZO_UPDATER_TOKEN);
   return {
     passwordAuth,
+    breachedPasswordCheck: source.AUTH_BREACHED_PASSWORD_CHECK_ENABLED === "true",
     oidc,
     nodeEnv: source.NODE_ENV ?? "",
     databaseUrl: required(source, "DATABASE_URL"),
@@ -179,9 +195,16 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
     authSecret,
     authUrl: source.BETTER_AUTH_URL ?? source.WEB_ORIGIN ?? "http://127.0.0.1:5173",
     webOrigin: source.WEB_ORIGIN ?? "http://127.0.0.1:5173",
+    passkeyAppleAppIds: list(source.PASSKEY_APPLE_APP_IDS),
+    passkeyAndroidCertFingerprints: androidCertFingerprints(source.PASSKEY_ANDROID_CERT_SHA256),
     privacyPolicyUrl: optional(source.PRIVACY_POLICY_URL),
     apiUrl: source.API_URL ?? "http://127.0.0.1:3100",
     apiHost: source.API_HOST ?? "127.0.0.1",
+    trustedProxies: (source.TRUSTED_PROXIES ?? "")
+      .split(/[\s,]+/)
+      .map((value) => value.trim())
+      .filter(Boolean),
+    clientIpHeader: optional(source.CLIENT_IP_HEADER)?.toLowerCase() ?? "x-forwarded-for",
     signupsEnabled: source.SIGNUPS_ENABLED,
     signupAllowlist: source.SIGNUP_ALLOWLIST,
     encryptionKey: resolveEncryptionKey(source),
@@ -220,6 +243,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
     sendblueApiSecret: optional(source.SENDBLUE_API_SECRET),
     sendblueSigningSecret: optional(source.SENDBLUE_SIGNING_SECRET),
     sendbluePhoneNumber: optional(source.SENDBLUE_PHONE_NUMBER),
+    expoAccessToken: optional(source.EXPO_ACCESS_TOKEN),
     smtpUrl: optional(source.SMTP_URL),
     emailFrom: optional(source.EMAIL_FROM),
     stripeSecretKey: optional(source.STRIPE_SECRET_KEY),
@@ -282,4 +306,19 @@ function browserMonitoringFromEnv(source: NodeJS.ProcessEnv): AppEnv["browserMon
 function optional(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed || undefined;
+}
+
+function list(value: string | undefined): string[] {
+  return (value ?? "").split(/[\s,]+/).filter(Boolean);
+}
+
+/** SHA-256 signing certificate fingerprints, normalized to the `AA:BB:…` form Digital Asset Links uses. */
+function androidCertFingerprints(value: string | undefined): string[] {
+  return list(value).map((fingerprint) => {
+    const hex = fingerprint.replace(/:/g, "");
+    if (!/^[0-9a-f]{64}$/i.test(hex)) {
+      throw new Error("PASSKEY_ANDROID_CERT_SHA256 must list SHA-256 fingerprints");
+    }
+    return hex.toUpperCase().match(/../g)!.join(":");
+  });
 }

@@ -63,8 +63,38 @@ export async function signup(
   if (testInfo) await captureScreenshot(page, testInfo, "01-sign-up");
   await page.getByPlaceholder("Your name").fill(name);
   await page.getByPlaceholder("Your email address").fill(email);
+  await showPasswordForm(page);
   await page.getByPlaceholder("Password").fill(password);
   await page.getByRole("button", { name: "Create account" }).click();
+}
+
+/** With email delivery the auth form opens on the emailed-code flow; switch to the password form. */
+export async function showPasswordForm(page: Page) {
+  const usePassword = page.getByRole("button", { name: "Use password" });
+  await expect(usePassword.or(page.getByPlaceholder("Password"))).toBeVisible();
+  if (await usePassword.isVisible()) await usePassword.click();
+}
+
+/** Waits for sidebar folds to finish so drag-and-drop targets have stopped moving. */
+export async function waitForSidebarTransitions(page: Page) {
+  // Base UI starts a fold a frame after the toggle, so let it begin before polling.
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve(undefined))),
+      ),
+  );
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          document
+            .querySelector("aside")
+            ?.getAnimations({ subtree: true })
+            .filter((animation) => animation instanceof CSSTransition).length ?? 0,
+      ),
+    )
+    .toBe(0);
 }
 
 export async function captureScreenshot(page: Page, testInfo: TestInfo, name: string) {

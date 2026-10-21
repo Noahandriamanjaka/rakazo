@@ -38,9 +38,8 @@ import {
 import { oauthCallbackFrom } from "./oauth-callback.js";
 import {
   bundledRendererCandidates,
-  contentType,
+  bundledRendererHeaders,
   forwardedRendererRequestInit,
-  immutableRendererAsset,
   isRendererAssetMiss,
 } from "./renderer-assets.js";
 import { installSessionPermissions } from "./session-permissions.js";
@@ -516,14 +515,7 @@ async function installBundledRenderer(
         if (isRendererAssetMiss(error)) continue;
         throw error;
       }
-      const headers = new Headers({
-        "cache-control": immutableRendererAsset(file)
-          ? "public, max-age=31536000, immutable"
-          : "no-cache",
-        "content-type": contentType(file),
-        "x-content-type-options": "nosniff",
-      });
-      return new Response(body, { headers });
+      return new Response(body, { headers: bundledRendererHeaders(file, request.url) });
     }
     return forward();
   });
@@ -711,6 +703,20 @@ function installApplicationMenu() {
       }
     },
   };
+  const viewMenu: Electron.MenuItemConstructorOptions = {
+    label: "View",
+    submenu: [
+      { role: "resetZoom" },
+      { role: "zoomIn" },
+      // zoomIn's default accelerator is Cmd/Ctrl+Plus, which needs Shift on US layouts.
+      { role: "zoomIn", accelerator: "CommandOrControl+=", visible: false },
+      { role: "zoomOut" },
+      // macOS adds its own Enter Full Screen item to a menu named View.
+      ...(process.platform === "darwin"
+        ? []
+        : ([{ type: "separator" }, { role: "togglefullscreen" }] as const)),
+    ],
+  };
   const template: Electron.MenuItemConstructorOptions[] =
     process.platform === "darwin"
       ? [
@@ -733,6 +739,7 @@ function installApplicationMenu() {
             ],
           },
           { role: "editMenu" },
+          viewMenu,
           {
             label: "Window",
             role: "window",
@@ -759,6 +766,7 @@ function installApplicationMenu() {
             ],
           },
           { role: "editMenu" },
+          viewMenu,
           { role: "windowMenu" },
         ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));

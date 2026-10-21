@@ -116,6 +116,10 @@ export const DE_MESSAGES: Record<string, string> = {
   "Already have an account?": "Du hast bereits ein Konto?",
   "Back to sign in": "Zurück zur Anmeldung",
   "Check your email": "Prüfe deine E-Mails",
+  "Use password": "Passwort verwenden",
+  "Use email code": "E-Mail-Code verwenden",
+  "Invalid code": "Ungültiger Code",
+  "Request a new code": "Fordere einen neuen Code an",
   "Checking…": "Wird geprüft…",
   "Custom server": "Eigener Server",
   "Custom server {host}": "Eigener Server {host}",
@@ -651,6 +655,7 @@ export const DE_MESSAGES: Record<string, string> = {
   "Save section name": "Abschnittsnamen speichern",
   "Section name": "Abschnittsname",
   "Silence notifications": "Benachrichtigungen stummschalten",
+  Pinned: "Angeheftet",
   Unassigned: "Nicht zugewiesen",
   Unpin: "Lösen",
   // components/computer-maintenance-actions.tsx
@@ -791,6 +796,7 @@ export const DE_MESSAGES: Record<string, string> = {
     "Eine Anmeldeseite wurde geöffnet — gib dort diesen Code ein:",
   "All providers": "Alle Anbieter",
   Copied: "Kopiert",
+  "Copy code": "Code kopieren",
   "Could not disconnect this provider": "Anbieter konnte nicht getrennt werden",
   "Default ({level})": "Standard ({level})",
   "Disconnected {provider}.": "{provider} getrennt.",
@@ -923,4 +929,10 @@ export const DE_MESSAGES: Record<string, string> = {
     "Die Antwort dieses Bots stoppte am Monatslimit seines Schlüssels. Dein eigener Schlüssel hat eigene Limits.",
   "This bot's reply stopped at its key's usage limit. Your own key has its own limits.":
     "Die Antwort dieses Bots stoppte am Nutzungslimit seines Schlüssels. Dein eigener Schlüssel hat eigene Limits.",
+  "Sign in with passkey": "Mit Passkey anmelden",
+  Passkeys: "Passkeys",
+  Passkey: "Passkey",
+  "Add passkey": "Passkey hinzufügen",
+  Rename: "Umbenennen",
+  "Add a passkey for faster sign-in?": "Passkey für schnellere Anmeldung hinzufügen?",
 };
